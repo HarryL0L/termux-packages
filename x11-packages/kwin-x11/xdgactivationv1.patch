@@ -1,0 +1,22 @@
+--- a/src/xdgactivationv1.cpp    2025-11-12 19:54:40.916015222 +0530
++++ b/src/xdgactivationv1.cpp    2025-11-13 04:49:57.569456018 +0530
+@@ -64,6 +64,8 @@
+     connect(activation, &XdgActivationV1Interface::activateRequested, this, &XdgActivationV1Integration::activateSurface);
+ }
+
++XdgActivationV1Integration::~XdgActivationV1Integration() = default;
++
+ QString XdgActivationV1Integration::requestToken(bool isPrivileged, SurfaceInterface *surface, uint serial, SeatInterface *seat, const QString &appId)
+ {
+     static int i = 0;
+
+--- a/src/xdgactivationv1.h      2025-11-12 19:54:40.948015222 +0530
++++ b/src/xdgactivationv1.h      2025-11-13 04:41:07.113455986 +0530
+@@ -27,6 +27,7 @@
+     Q_OBJECT
+ public:
+     XdgActivationV1Integration(XdgActivationV1Interface *activation, QObject *parent);
++    ~XdgActivationV1Integration() override;
+
+     QString requestPrivilegedToken(SurfaceInterface *surface, uint serial, SeatInterface *seat, const QString &appId)
+     {
