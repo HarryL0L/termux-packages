@@ -1,0 +1,11 @@
+--- a/src/decorations/decorationbridge.h   2025-10-28 14:49:41.000000000 +0530
++++ b/src/decorations/decorationbridge.h 2025-11-01 18:05:37.116980204 +0530
+@@ -12,7 +12,7 @@
+ #include <KDecoration3/Private/DecorationBridge>
+ #include <QObject>
+
+-class KPluginFactory;
++#include <KF6/KCoreAddons/kpluginfactory.h>
+ namespace KDecoration3
+ {
+ class DecorationSettings;
