@@ -1,0 +1,30 @@
+--- a/src/scene/surfaceitem.cpp  2025-11-12 19:54:40.904015222 +0530
++++ b/src/scene/surfaceitem.cpp  2025-11-12 23:36:33.943934682 +0530
+@@ -4,6 +4,7 @@
+     SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
++#include "surfaceitem.h"
+ #include "scene/surfaceitem.h"
+ #include "core/pixelgrid.h"
+ #include "scene/scene.h"
+@@ -18,6 +19,8 @@
+ {
+ }
+
++SurfaceItem::~SurfaceItem() = default;
++
+ QSizeF SurfaceItem::destinationSize() const
+ {
+     return m_destinationSize;
+
+--- a/src/scene/surfaceitem.h    2025-11-12 19:54:40.904015222 +0530
++++ b/src/scene/surfaceitem.h    2025-11-12 23:33:37.167934671 +0530
+@@ -26,6 +26,7 @@
+     Q_OBJECT
+
+ public:
++    ~SurfaceItem() override;
+     QSizeF destinationSize() const;
+     void setDestinationSize(const QSizeF &siz
+     e);
