@@ -1,0 +1,11 @@
+--- a/src/activation.cpp 2025-11-12 19:54:40.896015222 +0530
++++ b/src/activation.cpp 2025-11-12 22:38:14.891088364 +0530
+@@ -571,7 +571,7 @@
+ // a window to be fully raised upon its own request (XRaiseWindow),
+ // if refused, it will be raised only on top of windows belonging
+ // to the same application
+-bool Workspace::allowFullClientRaising(const KWin::Window *window, uint32_t time)
++bool Workspace::allowFullClientRaising(const Window *window, uint32_t time)
+ {
+     int level = window->rules()->checkFSP(options->focusStealingPreventionLevel());
+     if (sessionManager()->state() == SessionState::Saving && level <= 2) { // <= normal
