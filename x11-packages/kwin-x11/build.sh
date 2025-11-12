@@ -3,6 +3,7 @@ TERMUX_PKG_DESCRIPTION="An easy to use, but flexible, X Window Manager"
 TERMUX_PKG_LICENSE="LGPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION="6.5.2"
+TERMUX_PKG_REVISION=1
 TERMUX_PKG_SRCURL="https://download.kde.org/stable/plasma/${TERMUX_PKG_VERSION}/kwin-x11-${TERMUX_PKG_VERSION}.tar.xz"
 TERMUX_PKG_SHA256="632e6b14c7d302b6efec62ab08426a924ca720cb6fb207f0f922e59f7f689256"
 TERMUX_PKG_AUTO_UPDATE=true
@@ -53,3 +54,4 @@ termux_step_pre_configure() {
 
 	LDFLAGS+=" -landroid-shmem"
 }
+#TEST
