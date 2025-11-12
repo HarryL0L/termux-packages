@@ -1,0 +1,23 @@
+--- a/src/netinfo.h        2025-10-28 14:49:41.000000000 +0530
++++ b/src/netinfo.h      2025-11-01 19:44:26.548980558 +0530
+@@ -26,7 +26,7 @@
+ {
+
+ class Window;
+-class RootInfoFilter;
++#include "rootinfo_filter.h"
+ class X11Window;
+
+ /**
+
+--- a/src/netinfo.h      2025-11-12 19:54:40.916015222 +0530
++++ b/src/netinfo.h      2025-11-12 20:02:34.780015250 +0530
+@@ -59,7 +59,7 @@
+     friend RootInfo *rootInfo();
+
+     xcb_window_t m_activeWindow;
+-    std::unique_ptr<RootInfoFilter> m_eventFilter;
++    std::unique_ptr<KWin::RootInfoFilter> m_eventFilter;
+ };
+
+ inline RootInfo *rootInfo()
