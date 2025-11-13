@@ -1,0 +1,8 @@
+--- a/src/workspace.cpp  2025-11-12 19:54:40.924015222 +0530
++++ b/src/workspace.cpp  2025-11-13 06:16:35.785651603 +0530
+@@ -1966,8 +1966,8 @@
+                                                                   Window *Workspace::findWindow(const QUuid &internalId) const      {
+-    return findWindow([internalId](const KWin::Window *l) -> bool {                                                                -        return internalId == l->internalId();
++    return findWindow([internalId](const Window *l) -> bool {
++        return l->internalId() == internalId;
+     });                                                           }
