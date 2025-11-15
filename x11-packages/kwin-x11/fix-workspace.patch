@@ -12,11 +12,40 @@
  }
 
 --- a/src/workspace.h    2025-11-12 19:54:40.948015222 +0530
-+++ b/src/workspace.h    2025-11-15 09:21:48.167951967 +0530
-@@ -867,5 +867,5 @@
++++ b/src/workspace.h    2025-11-15 10:41:03.317924863 +0530
+@@ -807,19 +807,6 @@
+     return should_get_focus.count() > 0 ? should_get_focus.last() : m_activeWindow;
+ }
+
+-#if KWIN_BUILD_X11
+-inline void Workspace::addGroup(Group *group)                    -{
+-    Q_EMIT groupAdded(group);
+-    groups.append(group);                                        -}
+-                                                                 -inline void Workspace::removeGroup(Group *group)
+-{                                                                -    groups.removeAll(group);
+-}
+-#endif
+-
+ inline const QList<Window *> &Workspace::stackingOrder() const
+ {
+     // TODO: Q_ASSERT( block_stacking_updates == 0 );
+@@ -867,5 +854,18 @@
      return Workspace::_self;
  }
 
 -} // namespace
 +} // namespace KWin
  Q_DECLARE_OPERATORS_FOR_FLAGS(KWin::Workspace::ActivityFlags)
++
++#if KWIN_BUILD_X11
++inline void KWin::Workspace::addGroup(Group *group)
++{
++    Q_EMIT groupAdded(group);
++    groups.append(group);
++}
++
++inline void KWin::Workspace::removeGroup(Group *group)
++{
++    groups.removeAll(group);
++}
++#endif
