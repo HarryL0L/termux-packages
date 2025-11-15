@@ -3,7 +3,7 @@ TERMUX_PKG_DESCRIPTION="An easy to use, but flexible, X Window Manager"
 TERMUX_PKG_LICENSE="LGPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION="6.5.2"
-TERMUX_PKG_REVISION=3
+TERMUX_PKG_REVISION=4
 TERMUX_PKG_SRCURL="https://download.kde.org/stable/plasma/${TERMUX_PKG_VERSION}/kwin-x11-${TERMUX_PKG_VERSION}.tar.xz"
 TERMUX_PKG_SHA256="632e6b14c7d302b6efec62ab08426a924ca720cb6fb207f0f922e59f7f689256"
 TERMUX_PKG_AUTO_UPDATE=true
@@ -54,4 +54,15 @@ termux_step_pre_configure() {
 
 	LDFLAGS+=" -landroid-shmem"
 }
-#TEST3
+termux_step_make() {
+	echo "=== Dumping moc_workspace.cpp BEFORE BUILD ==="
+	if [ -f "$TERMUX_PKG_BUILDDIR/src/kwin_autogen/include/moc_workspace.cpp" ]; then
+		sed -n '1,200p' "$TERMUX_PKG_BUILDDIR/src/kwin_autogen/include/moc_workspace.cpp"
+	else
+		echo "moc_workspace.cpp not yet generated"
+	fi
+	echo "==============================================="
+
+    # Actual build
+	ninja -C "$TERMUX_PKG_BUILDDIR" -j ${TERMUX_PKG_MAKE_PROCESSES}
+}
