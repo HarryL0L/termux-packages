@@ -10,3 +10,13 @@
 +        return l->internalId() == internalId;
      });
  }
+
+--- a/src/workspace.h    2025-11-12 19:54:40.948015222 +0530
++++ b/src/workspace.h    2025-11-15 09:21:48.167951967 +0530
+@@ -867,5 +867,5 @@
+     return Workspace::_self;
+ }
+
+-} // namespace
++} // namespace KWin
+ Q_DECLARE_OPERATORS_FOR_FLAGS(KWin::Workspace::ActivityFlags)
