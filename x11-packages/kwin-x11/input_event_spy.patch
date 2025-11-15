@@ -1,0 +1,11 @@
+--- a/src/input_event_spy.h      2025-11-12 19:54:40.924015222 +0530
++++ b/src/input_event_spy.h      2025-11-15 10:42:22.625924868 +0530
+@@ -12,7 +12,7 @@
+ #include <QtGlobal>
+ #include <chrono>
+
+-class QPointF;
++#include <QPointF>
+
+ namespace KWin
+ {
