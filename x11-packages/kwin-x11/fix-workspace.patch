@@ -18,11 +18,15 @@
  }
 
 -#if KWIN_BUILD_X11
--inline void Workspace::addGroup(Group *group)                    -{
+-inline void Workspace::addGroup(Group *group)
+-{
 -    Q_EMIT groupAdded(group);
--    groups.append(group);                                        -}
--                                                                 -inline void Workspace::removeGroup(Group *group)
--{                                                                -    groups.removeAll(group);
+-    groups.append(group);
+-}
+-
+-inline void Workspace::removeGroup(Group *group)
+-{
+-    groups.removeAll(group);
 -}
 -#endif
 -
