@@ -11,3 +11,4 @@ TERMUX_PKG_BUILD_DEPENDS="clang, cmake, git, qt6-qtdeclarative, qt6-qttools"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
 "
+#test
