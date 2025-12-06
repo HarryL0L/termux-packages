@@ -8,3 +8,16 @@
      };
      QList<QByteArray> result = QList<QByteArray>::fromReadOnlyData(dirs);
      if constexpr (isVxworks) {
+
+--- a/src/plugins/tls/openssl/qtlsbackend_openssl.cpp2025-11-12 15:47:57.000000000 +0530
++++ b/src/plugins/tls/openssl/qtlsbackend_openssl.cpp       2025-12-06 17:59:51.598519345 +0530
+@@ -391,7 +391,8 @@
+         QSet<QString> certFiles = {
+             QStringLiteral("/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"), // Red Hat 2013+
+             QStringLiteral("/etc/pki/tls/certs/ca-bundle.crt"), // Red Hat older, Mandriva
+-            QStringLiteral("/usr/local/share/certs/ca-root-nss.crt") // FreeBSD's ca_root_nss
++            QStringLiteral("/usr/local/share/certs/ca-root-nss.crt"), // FreeBSD's ca_root_nss
++            QStringLiteral("@TERMUX_PREFIX@/etc/tls/cert.pem") // Termux ca-certificates
+         };
+
+         static const size_t extLen = strlen(".pem"); // or strlen(".crt")
