@@ -1,0 +1,10 @@
+TERMUX_PKG_HOMEPAGE="https://api.kde.org/legacy/futuresql/html/index.html"
+TERMUX_PKG_DESCRIPTION="Non-blocking Qt database framework"
+TERMUX_PKG_LICENSE="LGPL-2.1-or-later"
+TERMUX_PKG_MAINTAINER="@termux"
+TERMUX_PKG_VERSION="0.1.1"
+TERMUX_PKG_SRCURL="https://download.kde.org/Attic/futuresql/futuresql-${TERMUX_PKG_VERSION}.tar.xz"
+TERMUX_PKG_SHA256="ecd354c26c48a67795b0004e701066f6176d25d39adda1b8a1bf9c07fa48ba6a"
+TERMUX_PKG_AUTO_UPDATE=true
+TERMUX_PKG_DEPENDS="libc++, qt6-qtbase"
+TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules"
