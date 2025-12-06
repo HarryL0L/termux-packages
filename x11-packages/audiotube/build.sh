@@ -14,9 +14,9 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 "
 
 termux_step_create_debscripts() {
-    cat <<- EOF > ./postinst
-    #!$TERMUX_PREFIX/bin/sh
-    echo "Installing dependencies through pip..."
-    pip3 install ${TERMUX_PKG_PYTHON_TARGET_DEPS//, / }
-    EOF
+	cat <<- EOF > ./postinst
+	#!$TERMUX_PREFIX/bin/sh
+	echo "Installing dependencies through pip..."
+	pip3 install ${TERMUX_PKG_PYTHON_TARGET_DEPS//, / }
+	EOF
 }
