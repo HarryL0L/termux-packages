@@ -1,0 +1,51 @@
+diff --git a/src/kcrash.cpp b/src/kcrash.cpp
+index 65b7a40..60e2fb0 100644
+--- a/src/kcrash.cpp
++++ b/src/kcrash.cpp
+@@ -780,30 +780,33 @@ void KCrash::startProcess(int argc, const char *argv[], bool waitAndExit)
+ extern "C" char **environ;
+ static pid_t startDirectly(const char *argv[])
+ {
++    printf("BEESstartDirectly1\n");
+     char **environ_end;
+     for (environ_end = environ; *environ_end; ++environ_end) { }
++    printf("BEESstartDirectly2\n");
+ 
+     std::array<const char *, 1024> environ_data; // hope it's big enough
++    printf("BEESstartDirectly3\n");
+     if ((unsigned)(environ_end - environ) + 2 >= environ_data.size()) {
+         fprintf(stderr, "environ_data in KCrash not big enough!\n");
+         return 0;
+     }
++    printf("BEESstartDirectly4\n");
+     auto end = std::copy_if(environ, environ_end, environ_data.begin(), [](const char *s) {
+         static const char envvar[] = "KCRASH_AUTO_RESTARTED=";
+         return strncmp(envvar, s, sizeof(envvar) - 1) != 0;
+     });
++    printf("BEESstartDirectly5\n");
+     *end++ = "KCRASH_AUTO_RESTARTED=1";
+     *end++ = nullptr;
+     pid_t pid = fork();
++    printf("BEESstartDirectly6\n");
+     switch (pid) {
+     case -1:
+         fprintf(stderr, "KCrash failed to fork(), errno = %d\n", errno);
+         return 0;
+     case 0:
+-        setgroups(0, nullptr); // Remove any extraneous groups
+-        if (setgid(getgid()) < 0 || setuid(getuid()) < 0) {
+-            _exit(253); // This cannot happen. Theoretically.
+-        }
++        printf("BEESstartDirectly7\n");
+ #ifndef Q_OS_OSX
+         closeAllFDs(); // We are in the child now. Close FDs unconditionally.
+ #endif
+@@ -811,6 +814,7 @@ static pid_t startDirectly(const char *argv[])
+         fprintf(stderr, "KCrash failed to exec(), errno = %d\n", errno);
+         _exit(253);
+     default:
++        printf("BEESstartDirectly8\n");
+         return pid;
+     }
+ }
+ 
