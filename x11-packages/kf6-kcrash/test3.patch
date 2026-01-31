@@ -1,0 +1,10 @@
+--- a/src/kcrash.cpp
++++ b/src/kcrash.cpp
+@@ -708,6 +708,7 @@ static pid_t startDirectly(const char *argv[]);
+ 
+ void KCrash::startProcess(int argc, const char *argv[], bool waitAndExit)
+ {
++    printf("BEESstartProcess\n");
+     Q_UNUSED(argc);
+     fprintf(stderr, "KCrash: Attempting to start %s\n", argv[0]);
+ 
