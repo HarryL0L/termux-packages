@@ -88,7 +88,8 @@ index cf10afe..d9ac05e 100644
 +        printf("BEES17\n");
          if ((s_flags & AutoRestart) && s_autoRestartCommandLine) {
 +            printf("BEES18\n");
-             QThread::sleep(5);
+-            QThread::sleep(1);
++            QThread::sleep(5);
              startProcess(s_autoRestartCommandLine.argc, const_cast<const char **>(s_autoRestartCommandLine.argv), false);
          }
 +        printf("BEES19\n");
