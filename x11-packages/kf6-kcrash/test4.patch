@@ -1,13 +1,13 @@
 --- a/src/kcrash.cpp
 +++ b/src/kcrash.cpp
-@@ -453,6 +453,10 @@ void KCrash::defaultCrashHandler(int sig)
- #endif
-     printf("BEES14\n");
+@@ -466,7 +466,9 @@ void KCrash::defaultCrashHandler(int sig)
+             startProcess(s_autoRestartCommandLine.argc, const_cast<const char **>(s_autoRestartCommandLine.argv), false);
+         }
+         printf("BEES19\n");
+-        crashRecursionCounter++;
++        if (!crashRecurtionCounter) {
++            crashRecursionCounter++;
++        }
+     }
  
-+    if (crashRecursionCounter) {
-+        crashRecursionCounter = 1;
-+    }
-+
-     if (crashRecursionCounter < 2) {
-         printf("BEES15\n");
-         if (s_emergencySaveFunction) {
+     printf("BEES20\n");
