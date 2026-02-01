@@ -8,3 +8,7 @@ TERMUX_PKG_SHA256="a8407a5897a2e425ea1aa955ecf88485dd2fd417919de275b27c781a5d063
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_DEPENDS="glib, libc++, libxml2, sqlite"
 TERMUX_PKG_BUILD_DEPENDS="check, g-ir-scanner, glib, gobject-introspection, valac"
+
+termux_step_pre_configure() {
+	termux_setup_gir
+}
