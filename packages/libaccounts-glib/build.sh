@@ -1,0 +1,10 @@
+TERMUX_PKG_HOMEPAGE="https://gitlab.com/accounts-sso/libaccounts-glib"
+TERMUX_PKG_DESCRIPTION="Glib-based client library for accessing the online accounts database"
+TERMUX_PKG_LICENSE="LGPL-2.0-or-laterr"
+TERMUX_PKG_MAINTAINER="@termux"
+TERMUX_PKG_VERSION="VERSION_1.27"
+TERMUX_PKG_SRCURL="https://gitlab.com/accounts-sso/libaccounts-glib/-/archive/${TERMUX_PKG_VERSION}/libaccounts-glib-${TERMUX_PKG_VERSION}.tar.xz"
+TERMUX_PKG_SHA256="a8407a5897a2e425ea1aa955ecf88485dd2fd417919de275b27c781a5d0637a5"
+TERMUX_PKG_AUTO_UPDATE=true
+TERMUX_PKG_DEPENDS="glib, libc++, libxml2, sqlite"
+TERMUX_PKG_BUILD_DEPENDS="check, g-ir-scanner, glib, gobject-introspection, valac"
