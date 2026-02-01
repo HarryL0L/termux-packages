@@ -1,6 +1,6 @@
 TERMUX_PKG_HOMEPAGE="https://invent.kde.org/pim/kmime"
 TERMUX_PKG_DESCRIPTION="Library for handling mail messages and newsgroup articles"
-TERMUX_PKG_LICENSE="LGPL-2.0-or-laterr"
+TERMUX_PKG_LICENSE="LGPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION="25.12.1"
 TERMUX_PKG_SRCURL="https://download.kde.org/stable/release-service/${TERMUX_PKG_VERSION}/src/kmime-${TERMUX_PKG_VERSION}.tar.xz"
