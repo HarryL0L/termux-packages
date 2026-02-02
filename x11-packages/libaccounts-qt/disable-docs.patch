@@ -1,4 +1,4 @@
-⁨The docs require doxygen to build.
+# ⁨The docs require doxygen to build.
 
 --- a/accounts-qt.pro
 +++ b/accounts-qt.pro
