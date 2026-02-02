@@ -1,0 +1,9 @@
+--- a/signon.pro
++++ b/signon.pro
+@@ -7,6 +7,5 @@
+
+ include( common-installs-config.pri )
+
+-include( doc/doc.pri )
+
+ # End of File
