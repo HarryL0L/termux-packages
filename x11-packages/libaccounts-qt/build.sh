@@ -8,3 +8,8 @@ TERMUX_PKG_SHA256="6ed3e976133962c1c88f6c66928ba0d0a17a570843577d31e783dc891659e
 TERMUX_PKG_BUILD_IN_SRC=true
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_DEPENDS="glib, libc++, libaccounts-glib, qt6-qtbase"
+
+termux_step_pre_configure() {
+        TERMUX_PKG_SRCDIR+="/src"
+        TERMUX_PKG_BUILDDIR="$TERMUX_PKG_SRCDIR"
+}
