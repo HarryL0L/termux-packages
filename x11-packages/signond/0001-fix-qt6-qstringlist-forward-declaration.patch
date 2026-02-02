@@ -1,6 +1,14 @@
---- a/lib/plugins/SignOn/authpluginif.h2022-03-09 21:13:40.000000000 +0530
-+++ b/lib/plugins/SignOn/authpluginif.h       2026-02-02 23:37:42.184977468 +0530
-@@ -37,9 +37,10 @@
+--- a/lib/plugins/SignOn/authpluginif.h
++++ b/lib/plugins/SignOn/authpluginif.h
+@@ -28,6 +28,7 @@
+ #ifndef AUTHPLUGINIF_H
+ #define AUTHPLUGINIF_H
+
++#include <QtCore/qglobal.h>
+ #include <QtCore/qobject.h>
+ #include <QtCore/qpointer.h>
+ #include <QtCore/qplugin.h>
+@@ -37,9 +38,10 @@
  #include <SignOn/uisessiondata.h>
  #include <SignOn/signonerror.h>
 
