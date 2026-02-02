@@ -31,6 +31,8 @@ termux_step_configure() {
 	# to variables like QMAKE_CXXFLAGS.
 	"${TERMUX_PREFIX}/lib/qt6/bin/host-qmake6" \
 		PREFIX="$TERMUX_PREFIX" \
+		LIBDIR="$TERMUX_PREFIX/lib" \
+		CMAKE_CONFIG_PATH="$TERMUX_PREFIX/lib/cmake/SignOnQt5" \
 		QMAKE_CXX="$CXX" \
 		QMAKE_LINK="$CXX" \
 		QMAKE_CXXFLAGS="-isystem$TERMUX__PREFIX__INCLUDE_DIR" \
