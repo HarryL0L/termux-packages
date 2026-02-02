@@ -9,3 +9,10 @@ TERMUX_PKG_SRCNAME="libaccounts-qt-VERSION_${TERMUX_PKG_VERSION}"
 TERMUX_PKG_BUILD_IN_SRC=true
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_DEPENDS="glib, libc++, libaccounts-glib, qt6-qtbase"
+TERMUX_PKG_SKIP_SRC_EXTRACT=true
+
+termux_step_post_get_source() {
+	cd "$TERMUX_PKG_CACHEDIR"
+	tar -xf libaccounts-qt-VERSION_1.17.tar.gz
+	mv libaccounts-qt-VERSION_1.17 "$TERMUX_PKG_SRCDIR"
+}
