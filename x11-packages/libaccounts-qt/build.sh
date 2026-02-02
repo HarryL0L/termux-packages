@@ -10,6 +10,5 @@ TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_DEPENDS="glib, libc++, libaccounts-glib, qt6-qtbase"
 
 termux_step_pre_configure() {
-	TERMUX_PKG_SRCDIR+="/src"
 	TERMUX_PKG_BUILDDIR="$TERMUX_PKG_SRCDIR"
 }
