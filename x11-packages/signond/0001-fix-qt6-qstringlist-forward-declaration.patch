@@ -1,0 +1,14 @@
+--- a/lib/plugins/SignOn/authpluginif.h2022-03-09 21:13:40.000000000 +0530
++++ b/lib/plugins/SignOn/authpluginif.h       2026-02-02 23:37:42.184977468 +0530
+@@ -37,9 +37,10 @@
+ #include <SignOn/uisessiondata.h>
+ #include <SignOn/signonerror.h>
+
++#include <QStringList>
++
+ QT_BEGIN_NAMESPACE
+ class QString;
+-class QStringList;
+ class QByteArray;
+ class QVariant;
+ QT_END_NAMESPACE
