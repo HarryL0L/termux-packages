@@ -1,0 +1,31 @@
+From d759439066f0a34e5ad352ebab0b3bb2790d429e Mon Sep 17 00:00:00 2001
+From: Pino Toscano <toscano.pino@tiscali.it>
+Date: Sat, 2 Jan 2021 14:35:59 +0100
+Subject: [PATCH] build: enable again Qt deprecation warnings
+
+Now that -Werror is not used anymore, we can safely enable again the
+deprecation warnings for Qt; this way, it will be easier to spot
+deprecated APIs.
+
+Reverts part of commit d1626628a65d47a8c764c6f1049781eb385d0cb8.
+---
+ common-project-config.pri | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/common-project-config.pri b/common-project-config.pri
+index a2ffac0..1d5cdc6 100644
+--- a/common-project-config.pri
++++ b/common-project-config.pri
+@@ -25,8 +25,7 @@ TOP_SRC_DIR     = $$PWD
+ #DEFINES += QT_NO_DEBUG_OUTPUT
+ DEFINES += \
+     SIGNON_TRACE \
+-    QT_DISABLE_DEPRECATED_BEFORE=0x050900 \
+-    QT_NO_DEPRECATED_WARNINGS
++    QT_DISABLE_DEPRECATED_BEFORE=0x050900
+ 
+ #-----------------------------------------------------------------------------
+ # setup the installation prefix
+-- 
+GitLab
+

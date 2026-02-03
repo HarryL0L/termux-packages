@@ -1,0 +1,73 @@
+From a7db188b4e8d813b32997a26907d82432b4a5c1c Mon Sep 17 00:00:00 2001
+From: Alberto Mardegan <mardy@users.sourceforge.net>
+Date: Sun, 20 Dec 2020 22:32:37 +0300
+Subject: [PATCH] OAuth1: replace deprecated toAscii() with toLatin1()
+
+---
+ src/oauth1plugin.cpp | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/oauth1plugin.cpp b/src/oauth1plugin.cpp
+index 57c036d..322e8ca 100644
+--- a/src/oauth1plugin.cpp
++++ b/src/oauth1plugin.cpp
+@@ -281,10 +281,10 @@ void OAuth1Plugin::process(const SignOn::SessionData &inData,
+             if (!providedTokens.ScreenName().isNull())
+                 storeTokens.insert(SCREEN_NAME, providedTokens.ScreenName());
+ 
+-            d->m_oauth1Token = providedTokens.AccessToken().toAscii();
+-            d->m_oauth1TokenSecret = providedTokens.TokenSecret().toAscii();
+-            d->m_oauth1UserId = providedTokens.UserId().toAscii();
+-            d->m_oauth1ScreenName = providedTokens.ScreenName().toAscii();
++            d->m_oauth1Token = providedTokens.AccessToken().toLatin1();
++            d->m_oauth1TokenSecret = providedTokens.TokenSecret().toLatin1();
++            d->m_oauth1UserId = providedTokens.UserId().toLatin1();
++            d->m_oauth1ScreenName = providedTokens.ScreenName().toLatin1();
+ 
+             OAuth2TokenData tokens;
+             d->m_tokens.insert(d->m_key, QVariant::fromValue(storeTokens));
+@@ -556,8 +556,8 @@ void OAuth1Plugin::serverReply(QNetworkReply *reply)
+             const QMap<QString,QString> map = parseTextReply(replyContent);
+             if (d->m_oauth1RequestType == OAUTH1_POST_REQUEST_TOKEN) {
+                 // Extracting the request token, token secret
+-                d->m_oauth1Token = map.value(OAUTH_TOKEN).toAscii();
+-                d->m_oauth1TokenSecret = map.value(OAUTH_TOKEN_SECRET).toAscii();
++                d->m_oauth1Token = map.value(OAUTH_TOKEN).toLatin1();
++                d->m_oauth1TokenSecret = map.value(OAUTH_TOKEN_SECRET).toLatin1();
+                 if (d->m_oauth1Token.isEmpty() ||
+                     !map.contains(OAUTH_TOKEN_SECRET)) {
+                     TRACE() << "OAuth request token is empty or secret is missing";
+@@ -569,8 +569,8 @@ void OAuth1Plugin::serverReply(QNetworkReply *reply)
+             }
+             else if (d->m_oauth1RequestType == OAUTH1_POST_ACCESS_TOKEN) {
+                 // Extracting the access token
+-                d->m_oauth1Token = map.value(OAUTH_TOKEN).toAscii();
+-                d->m_oauth1TokenSecret = map.value(OAUTH_TOKEN_SECRET).toAscii();
++                d->m_oauth1Token = map.value(OAUTH_TOKEN).toLatin1();
++                d->m_oauth1TokenSecret = map.value(OAUTH_TOKEN_SECRET).toLatin1();
+                 if (d->m_oauth1Token.isEmpty() ||
+                     !map.contains(OAUTH_TOKEN_SECRET)) {
+                     TRACE()<< "OAuth access token is empty or secret is missing";
+@@ -620,8 +620,8 @@ OAuth1Plugin::oauth1responseFromMap(const QVariantMap &map)
+ 
+     TRACE() << "Response:" << map;
+     OAuth1PluginTokenData response(map);
+-    response.setAccessToken(map[OAUTH_TOKEN].toString().toAscii());
+-    response.setTokenSecret(map[OAUTH_TOKEN_SECRET].toString().toAscii());
++    response.setAccessToken(map[OAUTH_TOKEN].toString().toLatin1());
++    response.setTokenSecret(map[OAUTH_TOKEN_SECRET].toString().toLatin1());
+ 
+     // Store also (possible) user_id & screen_name
+     if (map.contains(USER_ID)) {
+@@ -688,7 +688,7 @@ void OAuth1Plugin::sendOAuth1PostRequest()
+     else {
+         Q_ASSERT_X(false, __FUNCTION__, "Invalid OAuth1 POST request");
+     }
+-    request.setRawHeader(QByteArray("Authorization"), authHeader.toAscii());
++    request.setRawHeader(QByteArray("Authorization"), authHeader.toLatin1());
+ 
+     postRequest(request, QByteArray());
+ }
+-- 
+GitLab
+

@@ -1,0 +1,43 @@
+From d1626628a65d47a8c764c6f1049781eb385d0cb8 Mon Sep 17 00:00:00 2001
+From: Alberto Mardegan <mardy@users.sourceforge.net>
+Date: Sun, 20 Dec 2020 22:42:04 +0300
+Subject: [PATCH] build: disable deprecation warnings
+
+But at the same time add a compilation flag to disable all methods which
+have been deprecated in Qt 5.9 (to make sure we don't lag too much
+behind :-) ).
+---
+ common-project-config.pri | 5 ++++-
+ src/common.h              | 2 --
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/common-project-config.pri b/common-project-config.pri
+index e149d90..c0d2e80 100644
+--- a/common-project-config.pri
++++ b/common-project-config.pri
+@@ -25,7 +25,10 @@ unix:QMAKE_CXXFLAGS += -Werror
+ TOP_SRC_DIR     = $$PWD
+ 
+ #DEFINES += QT_NO_DEBUG_OUTPUT
+-DEFINES += SIGNON_TRACE
++DEFINES += \
++    SIGNON_TRACE \
++    QT_DISABLE_DEPRECATED_BEFORE=0x050900 \
++    QT_NO_DEPRECATED_WARNINGS
+ 
+ #-----------------------------------------------------------------------------
+ # setup the installation prefix
+diff --git a/src/common.h b/src/common.h
+index c6201a1..a65525e 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -33,6 +33,4 @@
+ #define TRACE() if (0) qDebug()
+ #endif
+ 
+-#define QT_DISABLE_DEPRECATED_BEFORE QT_VERSION_CHECK(4, 0, 0)
+-
+ #endif // SIGNON_PLUGIN_OAUTH2_COMMON
+-- 
+GitLab
+
