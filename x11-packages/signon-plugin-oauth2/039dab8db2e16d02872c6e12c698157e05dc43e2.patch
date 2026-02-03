@@ -37,6 +37,32 @@ index 8ec7645..6c38cbb 100644
      QString oauthNonce = QString("%1%2").arg(nonce1).arg(nonce2);
      authHeader.append(EQUAL_WITH_QUOTES.arg(OAUTH_NONCE)
                        .arg(urlEncode(oauthNonce)));
-
+diff --git a/src/oauth2plugin.cpp b/src/oauth2plugin.cpp
+index 418e7db..8763f00 100644
+--- a/src/oauth2plugin.cpp
++++ b/src/oauth2plugin.cpp
+@@ -84,8 +84,10 @@ public:
+     {
+         TRACE();
+ 
++#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
+         // Initialize randomizer
+         qsrand(QTime::currentTime().msec());
++#endif
+     }
+ 
+     ~OAuth2PluginPrivate()
+@@ -180,7 +182,11 @@ void OAuth2Plugin::sendOAuth2AuthRequest()
+     QString redirectUri = d->m_oauth2Data.RedirectUri();
+     query.addQueryItem(REDIRECT_URI, QUrl::toPercentEncoding(redirectUri));
+     if (!d->m_oauth2Data.DisableStateParameter()) {
++#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
+         d->m_state = QString::number(qrand());
++#else
++        d->m_state = QString::number(QRandomGenerator::global()->generate());
++#endif
+         query.addQueryItem(STATE, d->m_state);
+     }
+     QStringList responseType = d->m_oauth2Data.ResponseType();
+-- 
 GitLab
-
