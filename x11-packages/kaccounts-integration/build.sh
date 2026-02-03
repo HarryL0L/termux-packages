@@ -11,7 +11,6 @@ TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, qcoro, qcoro-static, kf6-kdoctool
 TERMUX_PKG_EXCLUDED_ARCHES="i686"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
--DACCOUNTSQT_LIBRARIES=$TERMUX_PREFIX/lib/libaccounts-qt6.so
 -DKDE_INSTALL_QMLDIR=lib/qt6/qml
 -DKDE_INSTALL_QTPLUGINDIR=lib/qt6/plugins
 "
@@ -21,4 +20,3 @@ termux_step_pre_configure() {
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake/"
 	fi
 }
-#
