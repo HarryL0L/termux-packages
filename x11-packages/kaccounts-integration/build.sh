@@ -8,6 +8,7 @@ TERMUX_PKG_SHA256="a449426e849b0562622585d11a12f8b407bbf9cd3a988083b68f17a657727
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_DEPENDS="kf6-kcmutils, kf6-kconfig, kf6-kcoreaddons, kf6-kdbusaddons, kf6-ki18n, kf6-kio, kf6-kirigami, kf6-kwallet, libaccounts-qt, libc++, qt6-qtbase, qt6-qtdeclarative, signon-kwallet-extension, signon-plugin-oauth2, signon-ui, signond"
 TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, qcoro, qcoro-static, kf6-kdoctools"
+TERMUX_PKG_EXCLUDED_ARCHES="i686"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
 -DKDE_INSTALL_QMLDIR=lib/qt6/qml
