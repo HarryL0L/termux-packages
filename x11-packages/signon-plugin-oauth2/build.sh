@@ -35,3 +35,4 @@ termux_step_configure() {
 		QMAKE_LFLAGS="-L$TERMUX__PREFIX__LIB_DIR"
 	popd
 }
+#
