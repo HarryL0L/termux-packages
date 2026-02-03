@@ -1,0 +1,16 @@
+--- a/src/oauth2plugin.cpp
++++ b/src/oauth2plugin.cpp
+@@ -179,8 +179,12 @@
+     QString redirectUri = d->m_oauth2Data.RedirectUri();
+     url.addQueryItem(REDIRECT_URI, QUrl::toPercentEncoding(redirectUri));
+     if (!d->m_oauth2Data.DisableStateParameter()) {
++    #if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
+         d->m_state = QString::number(qrand());
+-        url.addQueryItem(STATE, d->m_state);
++    #else
++        d->m_state = QString::number(QRandomGenerator::global()->generate());
++    #endif
++    url.addQueryItem(STATE, d->m_state);
+     }
+     QStringList responseType = d->m_oauth2Data.ResponseType();
+     if (!responseType.isEmpty()) {
