@@ -11,7 +11,7 @@ TERMUX_PKG_UPDATE_VERSION_REGEXP="^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 TERMUX_PKG_UPDATE_VERSION_SED_REGEXP="s/-//g"
 TERMUX_PKG_DEPENDS="glib, libc++, libaccounts-qt, libnotify, libproxy, qt6-qtbase, qt6-qtdeclarative, qt6-qtpositioning, qt6-qtwebengine, signond"
 TERMUX_PKG_EXCLUDED_ARCHES="i686"
-#
+
 termux_step_pre_configure() {
 	export PKG_CONFIG_SYSROOT_DIR="$TERMUX__ROOTFS"
 }
