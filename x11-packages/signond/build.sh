@@ -1,4 +1,4 @@
-TERMUX_PKG_HOMEPAGE="https://gitlab.com/accounts-sso/signond/"
+#TERMUX_PKG_HOMEPAGE="https://gitlab.com/accounts-sso/signond/"
 TERMUX_PKG_DESCRIPTION="A D-Bus service which performs user authentication on behalf of its clients"
 TERMUX_PKG_LICENSE="LGPL-2.1-only"
 TERMUX_PKG_LICENSE_FILE="COPYING"
