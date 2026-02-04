@@ -15,7 +15,6 @@ TERMUX_PKG_BUILD_DEPENDS="qt6-qttools, ttf-dejavu"
 
 termux_step_pre_configure() {
 	export PKG_CONFIG_SYSROOT_DIR="$TERMUX__ROOTFS"
-	export INSTALL_ROOT="$TERMUX__ROOTFS"
 }
 
 termux_step_configure() {
@@ -33,6 +32,7 @@ termux_step_configure() {
 		QMAKE_CXX="$CXX" \
 		QMAKE_LINK="$CXX" \
 		QMAKE_CXXFLAGS="-isystem$TERMUX__PREFIX__INCLUDE_DIR" \
-		QMAKE_LFLAGS="-L$TERMUX__PREFIX__LIB_DIR"
+		QMAKE_LFLAGS="-L$TERMUX__PREFIX__LIB_DIR" \
+		PREFIX="$TERMUX__PREFIX"
 	popd
 }
