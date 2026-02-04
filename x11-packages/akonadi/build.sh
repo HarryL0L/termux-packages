@@ -39,7 +39,7 @@ termux_download_ubuntu_packages libkf6configwidgets-dev
 		-DBUILD_TOOLS=OFF \
 		-DBUILD_DESIGNERPLUGIN=OFF \
 		-DINSTALL_APPARMOR=OFF \
-		-DKF6ConfigWidgets_DIR=/usr/lib/x86_64-linux-gnu/cmake/KF6ConfigWidgets
+		-DKF6ConfigWidgets_DIR=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu/cmake/KF6ConfigWidgets
 
 	ninja -j ${TERMUX_PKG_MAKE_PROCESSES} protocolgen
 
