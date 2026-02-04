@@ -24,8 +24,8 @@ termux_step_host_build() {
 	termux_setup_ninja
 
 	cmake -G Ninja \
-		-S "${TERMUX_PKG_SRCDIR}/src/private/protocolgen" \
-		-B "${TERMUX_PKG_HOSTBUILD_DIR}/protocolgen" \
+		-S "${TERMUX_PKG_SRCDIR}" \
+		-B "${TERMUX_PKG_HOSTBUILD_DIR}" \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=$TERMUX_PREFIX/opt/kf6/cross \
 		-DCMAKE_PREFIX_PATH="$TERMUX_PREFIX/opt/qt6/cross/lib/cmake" \
@@ -39,7 +39,7 @@ termux_step_host_build() {
 
 	# Copy protocolgen to cross/bin
 	mkdir -p "$TERMUX_PREFIX/opt/kf6/cross/bin"
-	cp "$TERMUX_PKG_HOSTBUILD_DIR/protocolgen/bin/protocolgen" \
+	cp "$TERMUX_PKG_HOSTBUILD_DIR/bin/protocolgen" \
 		"$TERMUX_PREFIX/opt/kf6/cross/bin/"
 }
 
