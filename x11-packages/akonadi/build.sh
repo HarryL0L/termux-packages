@@ -11,6 +11,7 @@ TERMUX_PKG_DEPENDS="kaccounts-integration, kf6-kcolorscheme, kf6-kconfig, kf6-kc
 TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, kaccounts-integration, kf6-kconfigwidgets, kf6-kiconthemes, kf6-kitemmodels, kf6-kxmlgui, postgresql, qt6-qttools"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
+-DBUILD_TOOLS=OFF
 -DKDE_INSTALL_QMLDIR=lib/qt6/qml
 -DKDE_INSTALL_QTPLUGINDIR=lib/qt6/plugins
 "
@@ -19,8 +20,6 @@ termux_step_host_build() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
 		return
 	fi
-
-termux_download_ubuntu_packages libkf6configwidgets-dev
 
 	termux_setup_cmake
 	termux_setup_ninja
@@ -35,7 +34,10 @@ termux_download_ubuntu_packages libkf6configwidgets-dev
 		-DECM_DIR="$TERMUX_PREFIX/share/ECM/cmake" \
 		-DTERMUX_PREFIX="$TERMUX_PREFIX" \
 		-DCMAKE_INSTALL_LIBDIR=lib \
-		-DKF6ConfigWidgets_DIR=/usr/lib/x86_64-linux-gnu/cmake/KF6Config
+		-DBUILD_TESTING=OFF \
+		-DBUILD_TOOLS=ON \
+		-DBUILD_DESIGNERPLUGIN=OFF \
+		-DINSTALL_APPARMOR=OFF
 
 	ninja -j ${TERMUX_PKG_MAKE_PROCESSES}
 
