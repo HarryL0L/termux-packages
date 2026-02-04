@@ -46,6 +46,8 @@ local QT6_HOSTBUILD_COMPILER_ARGS="
 }
 
 termux_step_pre_configure() {
+	# Reset hostbuild marker
+	rm -rf "$TERMUX_HOSTBUILD_MARKER"
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DPROTOCOLGEN_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/protocolgen"
 		export PATH="$TERMUX_PKG_HOSTBUILD_DIR:$PATH"
