@@ -9,6 +9,7 @@ TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_HOSTBUILD=true
 TERMUX_PKG_DEPENDS="kaccounts-integration, kf6-kcolorscheme, kf6-kconfig, kf6-kconfigwidgets, kf6-kcoreaddons, kf6-kcrash, kf6-ki18n, kf6-kiconthemes, kf6-kitemmodels, kf6-kwidgetsaddons, kf6-kxmlgui, kirigami-addons, libc++, libaccounts-qt, liblzma, libxml2, qt6-qtbase"
 TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, kaccounts-integration, kf6-kconfigwidgets, kf6-kiconthemes, kf6-kitemmodels, kf6-kxmlgui, postgresql, qt6-qttools"
+TERMUX_PKG_EXCLUDED_ARCHES="i686"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
 -DKDE_INSTALL_QMLDIR=lib/qt6/qml
