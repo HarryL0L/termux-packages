@@ -44,7 +44,7 @@ local QT6_HOSTBUILD_COMPILER_ARGS="
 }
 
 termux_step_pre_configure() {
-	# Reset hostbuild marker (optional but fine)
+	# Reset hostbuild marker
 	rm -rf "$TERMUX_HOSTBUILD_MARKER"
 
 	local patch="$TERMUX_PKG_BUILDER_DIR/protocolgen-path.diff"
@@ -57,10 +57,10 @@ termux_step_pre_configure() {
 			src/private/CMakeLists.txt
 	else
 		# cross build → host-built protocolgen
+		export PATH="$TERMUX_PKG_HOSTBUILD_DIR:$PATH"
 		sed -i "s|@PROTOCOLGEN@|$(command -v protocolgen)|g" \
 			src/private/CMakeLists.txt
 
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake"
-		export PATH="$TERMUX_PKG_HOSTBUILD_DIR:$PATH"
 	fi
 }
