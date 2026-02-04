@@ -26,16 +26,16 @@ local QT6_HOSTBUILD_COMPILER_ARGS="
 	-lQt6Core
 	-I$TERMUX_PREFIX/opt/qt6/cross/include/qt6/QtCore
 	-I$TERMUX_PREFIX/opt/qt6/cross/include/qt6
-	-I$TERMUX_PKG_SRCDIR/private/protocolgen
+	-I$TERMUX_PKG_SRCDIR/src/private/protocolgen
 	"
 
 	local PROTOCOLGEN_SOURCES="
-	$TERMUX_PKG_SRCDIR/private/protocolgen/main.cpp
-	$TERMUX_PKG_SRCDIR/private/protocolgen/cppgenerator.cpp
-	$TERMUX_PKG_SRCDIR/private/protocolgen/cpphelper.cpp
-	$TERMUX_PKG_SRCDIR/private/protocolgen/nodetree.cpp
-	$TERMUX_PKG_SRCDIR/private/protocolgen/typehelper.cpp
-	$TERMUX_PKG_SRCDIR/private/protocolgen/xmlparser.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/main.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/cppgenerator.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/cpphelper.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/nodetree.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/typehelper.cpp
+	$TERMUX_PKG_SRCDIR/src/private/protocolgen/xmlparser.cpp
 	"
 
 	g++ $PROTOCOLGEN_SOURCES \
