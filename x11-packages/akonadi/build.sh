@@ -41,15 +41,26 @@ local QT6_HOSTBUILD_COMPILER_ARGS="
 	g++ $PROTOCOLGEN_SOURCES \
 		$QT6_HOSTBUILD_COMPILER_ARGS \
 		-o protocolgen
-
-
 }
 
 termux_step_pre_configure() {
-	# Reset hostbuild marker
+	# Reset hostbuild marker (optional but fine)
 	rm -rf "$TERMUX_HOSTBUILD_MARKER"
-	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DPROTOCOLGEN_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/protocolgen"
+
+	local patch="$TERMUX_PKG_BUILDER_DIR/protocolgen-path.diff"
+	echo "Applying patch: $(basename "$patch")"
+	patch --silent -p1 -d "$TERMUX_PKG_SRCDIR" < "$patch"
+
+	if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
+		# on-device build → target-built protocolgen
+		sed -i "s|@PROTOCOLGEN@|\$<TARGET_FILE:protocolgen>|g" \
+			src/private/CMakeLists.txt
+	else
+		# cross build → host-built protocolgen
+		sed -i "s|@PROTOCOLGEN@|$(command -v protocolgen)|g" \
+			src/private/CMakeLists.txt
+
+		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake"
 		export PATH="$TERMUX_PKG_HOSTBUILD_DIR:$PATH"
 	fi
 }
