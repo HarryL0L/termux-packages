@@ -1,4 +1,4 @@
-#TERMUX_PKG_HOMEPAGE="https://invent.kde.org/network/kaccounts-integration"
+TERMUX_PKG_HOMEPAGE="https://invent.kde.org/network/kaccounts-integration"
 TERMUX_PKG_DESCRIPTION="Online account management system and its Plasma integration components"
 TERMUX_PKG_LICENSE="GPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
