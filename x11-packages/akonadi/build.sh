@@ -20,6 +20,8 @@ termux_step_host_build() {
 		return
 	fi
 
+termux_download_ubuntu_packages libkf6configwidgets-dev
+
 	termux_setup_cmake
 	termux_setup_ninja
 
@@ -36,7 +38,8 @@ termux_step_host_build() {
 		-DBUILD_TESTING=OFF \
 		-DBUILD_TOOLS=OFF \
 		-DBUILD_DESIGNERPLUGIN=OFF \
-		-DINSTALL_APPARMOR=OFF
+		-DINSTALL_APPARMOR=OFF \
+		-DKF6ConfigWidgets_DIR=/usr/lib/x86_64-linux-gnu/cmake/KF6ConfigWidgets
 
 	ninja -j ${TERMUX_PKG_MAKE_PROCESSES} protocolgen
 
