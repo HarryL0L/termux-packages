@@ -1,4 +1,4 @@
-#TERMUX_PKG_HOMEPAGE="https://invent.kde.org/network/signon-kwallet-extension"
+TERMUX_PKG_HOMEPAGE="https://invent.kde.org/network/signon-kwallet-extension"
 TERMUX_PKG_DESCRIPTION="KWallet integration for signon framework"
 TERMUX_PKG_LICENSE="LGPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
