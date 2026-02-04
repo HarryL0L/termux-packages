@@ -1,4 +1,4 @@
-TERMUX_PKG_HOMEPAGE="https://gitlab.com/accounts-sso/signon-plugin-oauth2"
+#TERMUX_PKG_HOMEPAGE="https://gitlab.com/accounts-sso/signon-plugin-oauth2"
 TERMUX_PKG_DESCRIPTION="OAuth 2 plugin for signon"
 TERMUX_PKG_LICENSE="LGPL-2.1-only"
 TERMUX_PKG_LICENSE_FILE="COPYING"
