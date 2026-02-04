@@ -20,41 +20,34 @@ termux_step_host_build() {
 		return
 	fi
 
-termux_download_ubuntu_packages libkf6configwidgets-dev
+local QT6_HOSTBUILD_COMPILER_ARGS="
+	-L$TERMUX_PREFIX/opt/qt6/cross/lib
+	-Wl,-rpath=$TERMUX_PREFIX/opt/qt6/cross/lib
+	-lQt6Core
+	-I$TERMUX_PREFIX/opt/qt6/cross/include/qt6/QtCore
+	-I$TERMUX_PREFIX/opt/qt6/cross/include/qt6
+	-I$TERMUX_PKG_SRCDIR/private/protocolgen
+	"
 
-	termux_setup_cmake
-	termux_setup_ninja
+	local PROTOCOLGEN_SOURCES="
+	$TERMUX_PKG_SRCDIR/private/protocolgen/main.cpp
+	$TERMUX_PKG_SRCDIR/private/protocolgen/cppgenerator.cpp
+	$TERMUX_PKG_SRCDIR/private/protocolgen/cpphelper.cpp
+	$TERMUX_PKG_SRCDIR/private/protocolgen/nodetree.cpp
+	$TERMUX_PKG_SRCDIR/private/protocolgen/typehelper.cpp
+	$TERMUX_PKG_SRCDIR/private/protocolgen/xmlparser.cpp
+	"
 
-	cmake -G Ninja \
-		-S "${TERMUX_PKG_SRCDIR}" \
-		-B "${TERMUX_PKG_HOSTBUILD_DIR}" \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_INSTALL_PREFIX=$TERMUX_PREFIX/opt/kf6/cross \
-		-DCMAKE_PREFIX_PATH="$TERMUX_PREFIX/opt/qt6/cross/lib/cmake" \
-		-DCMAKE_MODULE_PATH="$TERMUX_PREFIX/share/ECM/modules" \
-		-DECM_DIR="$TERMUX_PREFIX/share/ECM/cmake" \
-		-DTERMUX_PREFIX="$TERMUX_PREFIX" \
-		-DCMAKE_INSTALL_LIBDIR=lib \
-		-DBUILD_TESTING=OFF \
-		-DBUILD_TOOLS=OFF \
-		-DBUILD_DESIGNERPLUGIN=OFF \
-		-DINSTALL_APPARMOR=OFF \
-		-DKF6ConfigWidgets_DIR=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu/cmake/KF6ConfigWidgets
-
-	ninja -j ${TERMUX_PKG_MAKE_PROCESSES} protocolgen
+	g++ $PROTOCOLGEN_SOURCES \
+		$QT6_HOSTBUILD_COMPILER_ARGS \
+		-o protocolgen
 
 
-	# Copy protocolgen to cross/bin
-	mkdir -p "$TERMUX_PREFIX/opt/kf6/cross/bin"
-	cp "$TERMUX_PKG_HOSTBUILD_DIR/bin/protocolgen" \
-		"$TERMUX_PREFIX/opt/kf6/cross/bin/"
 }
 
 termux_step_pre_configure() {
-	# Reset hostbuild marker
-	rm -rf "$TERMUX_HOSTBUILD_MARKER"
-	if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
-		return
+	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
+		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake"
+		export PATH="$TERMUX_PKG_HOSTBUILD_DIR:$PATH"
 	fi
-	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DPROTOCOLGEN_EXECUTABLE=$TERMUX_PREFIX/opt/kf6/cross/bin/protocolgen"
 }
