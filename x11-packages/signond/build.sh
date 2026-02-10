@@ -18,5 +18,5 @@ termux_step_pre_configure() {
 }
 
 termux_step_configure() {
-  termux_step_configure_qmake6
+	termux_step_configure_qmake6
 }
