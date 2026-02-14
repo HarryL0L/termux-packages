@@ -31,3 +31,4 @@ termux_step_pre_configure() {
 			-DHunspell_EXECUTABLE=$TERMUX_PKG_TMPDIR/ubuntu/usr/bin/hunspell"
 	fi
 }
+#test
