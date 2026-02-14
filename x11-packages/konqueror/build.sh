@@ -27,6 +27,8 @@ termux_step_pre_configure() {
 			hunspell-en-us \
 			libhunspell-1.7-0
 
+	export DICPATH="$TERMUX_PKG_TMPDIR/ubuntu/usr/share/hunspell"
+
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 			-DHunspell_EXECUTABLE=$TERMUX_PKG_TMPDIR/ubuntu/usr/bin/hunspell"
 	fi
