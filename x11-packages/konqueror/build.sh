@@ -29,6 +29,6 @@ termux_step_pre_configure() {
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 			-DHunspell_EXECUTABLE=${HOST_HUNSPELL}"
 
-		export LD_LIBRARY_PATH="${HOST_LIBDIR}:$LD_LIBRARY_PATH"
+		export LD_LIBRARY_PATH="${HOST_LIBDIR}:${LD_LIBRARY_PATH:-}"
 	fi
 }
