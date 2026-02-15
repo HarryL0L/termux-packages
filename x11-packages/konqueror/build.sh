@@ -20,14 +20,11 @@ termux_step_pre_configure() {
 	termux_download_ubuntu_packages \
 		hunspell \
 		hunspell-en-us \
-		libhunspell-1.7-0
-
-#	export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
+		libhunspell-1.7
 
 	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 	-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell \
-	-DHunspell_LIBRARY=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu/libhunspell-1.7.so \
-	-DHunspell_INCLUDE_DIR=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/include"
-#	export DICPATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/share/hunspell"
+	-DHunspell_LIBRARY=/usr/lib/x86_64-linux-gnu/libhunspell-1.7.so \
+	-DHunspell_INCLUDE_DIR=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/include/x86_64-linux-gnu;$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/include"
 fi
 }
