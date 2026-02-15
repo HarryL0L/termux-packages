@@ -17,10 +17,7 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 
 termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-	termux_download_ubuntu_packages \
-		hunspell \
-		hunspell-en-us \
-		libhunspell-1.7
+	termux_download_ubuntu_packages hunspell hunspell-en-us libhunspell-1.7-0
 
 	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 	-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell \
