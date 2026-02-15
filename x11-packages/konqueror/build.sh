@@ -15,10 +15,14 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DKDE_INSTALL_QTPLUGINDIR=lib/qt6/plugins
 "
 
+termux_step_host_build() {
+	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
+	termux_download_ubuntu_packages hunspell hunspell-en-us libhunspell-1.7-0
+	fi
+}
+
 termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		termux_download_ubuntu_packages hunspell hunspell-en-us libhunspell-1.7-0
-
 		export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
