@@ -22,6 +22,10 @@ termux_step_pre_configure() {
 			hunspell-en-us \
 			libhunspell-1.7-0
 
+		echo "===== DEBUG: hunspell -D output ====="
+		"$TERMUX_PKG_TMPDIR/ubuntu/usr/bin/hunspell" -D || true
+		echo "===== END DEBUG ====="
+
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 			-DHunspell_EXECUTABLE=$TERMUX_PKG_TMPDIR/ubuntu/usr/bin/hunspell"
 
