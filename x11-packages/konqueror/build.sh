@@ -22,16 +22,13 @@ termux_step_pre_configure() {
 			hunspell-en-us \
 			libhunspell-1.7-0
 
-		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
-			-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
-	fi
-}
+		HOST_HUNSPELL="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
+		HOST_LIBDIR="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
-termux_step_configure() {
-	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu" \
-		termux_step_configure_cmake
-	else
-		termux_step_configure_cmake
+		# Inject LD path only for CMake configure step
+		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
+			-DHunspell_EXECUTABLE=${HOST_HUNSPELL}"
+
+		export LD_LIBRARY_PATH="${HOST_LIBDIR}:$LD_LIBRARY_PATH"
 	fi
 }
