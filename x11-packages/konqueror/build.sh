@@ -17,15 +17,12 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 
 termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-	echo "===== DEBUG: Qt6PrintSupport DIR CHECK ====="
-		ls "$TERMUX_PREFIX/lib/cmake/Qt6PrintSupport"
-		echo "===== END DEBUG ====="
 	termux_download_ubuntu_packages \
 		hunspell \
 		hunspell-en-us \
 		libhunspell-1.7-0
 
-	export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
+#	export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
 	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 		-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
