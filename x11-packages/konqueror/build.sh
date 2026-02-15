@@ -25,7 +25,7 @@ termux_step_pre_configure() {
 #	export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
 	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
-		-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
+		-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu;$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
 
 	export DICPATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/share/hunspell"
 fi
