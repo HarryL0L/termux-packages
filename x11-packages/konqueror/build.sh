@@ -17,18 +17,12 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 
 termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		termux_download_ubuntu_packages \
-			hunspell \
-			hunspell-en-us \
-			libhunspell-1.7-0
+		termux_download_ubuntu_packages hunspell hunspell-en-us libhunspell-1.7-0
 
-		HOST_HUNSPELL="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
-		HOST_LIBDIR="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
+		export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
-		# Inject LD path only for CMake configure step
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
-			-DHunspell_EXECUTABLE=${HOST_HUNSPELL}"
-
-		export LD_LIBRARY_PATH="${HOST_LIBDIR}:${LD_LIBRARY_PATH:-}"
+			-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell \
+			-DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake/"
 	fi
 }
