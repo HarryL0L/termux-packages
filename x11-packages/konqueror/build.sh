@@ -17,20 +17,17 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 
 termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		# KF6 host tooling (if needed)
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 			-DKF6_HOST_TOOLING=$TERMUX_PREFIX/opt/kf6/cross/lib/cmake/"
 
-		# Provide host hunspell for CI
 		termux_download_ubuntu_packages \
 			hunspell \
 			hunspell-en-us \
 			libhunspell-1.7-0
 
-	export DICPATH="$TERMUX_PKG_TMPDIR/ubuntu/usr/share/hunspell"
+		export DICPATH="$TERMUX_PKG_TMPDIR/ubuntu/usr/share/hunspell"
 
 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
 			-DHunspell_EXECUTABLE=$TERMUX_PKG_TMPDIR/ubuntu/usr/bin/hunspell"
 	fi
 }
-
