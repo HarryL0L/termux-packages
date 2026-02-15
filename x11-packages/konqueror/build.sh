@@ -19,9 +19,9 @@ termux_step_pre_configure() {
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
 	termux_download_ubuntu_packages hunspell hunspell-en-us libhunspell-1.7-0
 
+	LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
+
 	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" \
-	-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell \
-	-DHunspell_LIBRARY=/usr/lib/x86_64-linux-gnu/libhunspell-1.7.so \
-	-DHunspell_INCLUDE_DIR=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/include/x86_64-linux-gnu;$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/include"
+	-DHunspell_EXECUTABLE=$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/bin/hunspell"
 fi
 }
