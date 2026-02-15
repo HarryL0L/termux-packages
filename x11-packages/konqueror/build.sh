@@ -11,19 +11,7 @@ TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, kf6-kdoctools"
 TERMUX_PKG_EXCLUDED_ARCHES="i686"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
+-DUSE_SYSTEM_DICTIONARIES=1
 -DKDE_INSTALL_QMLDIR=lib/qt6/qml
 -DKDE_INSTALL_QTPLUGINDIR=lib/qt6/plugins
 "
-
-termux_step_pre_configure() {
-	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
-		termux_download_ubuntu_packages \
-			hunspell \
-			hunspell-en-us \
-			libhunspell-1.7-0
-
-		export PATH="$TERMUX_PKG_TMPDIR/ubuntu/usr/bin:$PATH"
-
-		export DICPATH="$TERMUX_PKG_TMPDIR/ubuntu/usr/share/hunspell"
-	fi
-}
