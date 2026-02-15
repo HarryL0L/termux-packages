@@ -23,7 +23,6 @@ termux_step_host_build() {
 }
 
 termux_step_pre_configure() {
-	rm -rf "$TERMUX_HOSTBUILD_MARKER"
 	if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
 		export LD_LIBRARY_PATH="$TERMUX_PKG_HOSTBUILD_DIR/ubuntu_packages/usr/lib/x86_64-linux-gnu"
 
