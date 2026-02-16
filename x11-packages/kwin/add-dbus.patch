@@ -1,0 +1,11 @@
+--- a/src/kcms/rules/CMakeLists.txt
++++ b/src/kcms/rules/CMakeLists.txt
+@@ -28,7 +28,7 @@
+
+ set(kcm_libs
+     Qt::Quick
+-
++    Qt::DBus
+     KF6::KCMUtils
+     KF6::I18n
+     KF6::KCMUtilsQuick
