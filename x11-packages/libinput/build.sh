@@ -18,3 +18,4 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -Dlua-plugins=disabled
 -Dautoload-plugins=false
 "
+#this doesn't work for testing only.
