@@ -1,5 +1,5 @@
-TERMUX_PKG_HOMEPAGE="https://invent.kde.org/plasma/kwin-x11"
-TERMUX_PKG_DESCRIPTION="An easy to use, but flexible, X Window Manager"
+TERMUX_PKG_HOMEPAGE="https://invent.kde.org/plasma/kwin"
+TERMUX_PKG_DESCRIPTION="An easy to use, but flexible, Wayland compositor"
 TERMUX_PKG_LICENSE="LGPL-2.0-or-later"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION="6.5.5"
@@ -7,7 +7,7 @@ TERMUX_PKG_SRCURL="https://download.kde.org/stable/plasma/${TERMUX_PKG_VERSION}/
 TERMUX_PKG_SHA256="fbad845044231174ca7aad45572d1713d1b6f65289d94cac24776a103f051e46"
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_HOSTBUILD=true
-TERMUX_PKG_DEPENDS="aurorae, breeze, kf6-kauth, kf6-kcmutils, kf6-kcolorscheme, kf6-kconfig, kf6-kcoreaddons, kf6-kcrash, kf6-kdeclarative, kdecoration, kf6-kglobalaccel, kglobalacceld, kf6-kguiaddons, kf6-ki18n, kf6-kidletime, kf6-kirigami, kf6-kitemmodels, kf6-knewstuff, kf6-knotifications, kf6-kpackage, kf6-kservice, kf6-ksvg, kf6-kwidgetsaddons, kf6-kwindowsystem, kf6-kxmlgui, knighttime, libc++, libcanberra, libdisplay-info, libdrm, libepoxy, libinput, libplasma, libqaccessibilityclient-qt6, libwayland, libx11, libxcb, libxi, libxkbcommon, littlecms, mesa, plasma-activities, qt6-qt5compat, qt6-qtbase, qt6-qtdeclarative, qt6-qtsensors, qt6-qtsvg, qt6-qttools, qt6-qtwayland, xcb-util-cursor, xcb-util-keysyms, xcb-util-wm"
+TERMUX_PKG_DEPENDS="aurorae, breeze, kf6-kauth, kf6-kcmutils, kf6-kcolorscheme, kf6-kconfig, kf6-kcoreaddons, kf6-kcrash, kf6-kdeclarative, kdecoration, kf6-kglobalaccel, kglobalacceld, kf6-kguiaddons, kf6-ki18n, kf6-kidletime, kf6-kirigami, kf6-kitemmodels, kf6-knewstuff, kf6-knotifications, kf6-kpackage, kf6-kservice, kf6-ksvg, kf6-kwidgetsaddons, kf6-kwindowsystem, kf6-kxmlgui, knighttime, libc++, libcanberra, libdisplay-info, libdrm, libepoxy, libinput, libplasma, libqaccessibilityclient-qt6, libwayland, libx11, libxcb, libxcvt, libxi, libxkbcommon, littlecms, mesa, plasma-activities, qt6-qt5compat, qt6-qtbase, qt6-qtdeclarative, qt6-qtsensors, qt6-qtsvg, qt6-qttools, qt6-qtwayland, xcb-util-cursor, xcb-util-keysyms, xcb-util-wm"
 TERMUX_PKG_BUILD_DEPENDS="extra-cmake-modules, plasma-wayland-protocols, libwayland-protocols"
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -DCMAKE_SYSTEM_NAME=Linux
