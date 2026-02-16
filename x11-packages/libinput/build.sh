@@ -20,6 +20,6 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -Dautoload-plugins=false
 "
 termux_step_patch_package() {
-    patch -p1 < $TERMUX_PKG_BUILDER_DIR/test.patch
+	patch -p1 < $TERMUX_PKG_BUILDER_DIR/test.patch
 }
 #this doesn't work for testing only.
