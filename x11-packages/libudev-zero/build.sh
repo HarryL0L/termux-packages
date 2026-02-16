@@ -8,4 +8,8 @@ TERMUX_PKG_SHA256="0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_BUILD_IN_SRC=true
 TERMUX_PKG_DEPENDS="libc++"
+
+termux_step_make_install() {
+	make PREFIX=$TERMUX_PREFIX install
+}
 #this has no use only added for testing.
