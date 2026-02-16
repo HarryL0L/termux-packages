@@ -19,7 +19,8 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -Dlua-plugins=disabled
 -Dautoload-plugins=false
 "
-termux_step_patch_package() {
-	patch -p1 < $TERMUX_PKG_BUILDER_DIR/test.patch
+
+termux_step_pre_configure() {
+	CPPFLAGS+=" -Dindex=strchr -Drindex=strrchr"
 }
 #this doesn't work for testing only.
