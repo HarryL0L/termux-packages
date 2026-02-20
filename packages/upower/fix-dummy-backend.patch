@@ -30,7 +30,7 @@
  }
 
  /**
-@@ -117,7 +120,30 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+@@ -117,12 +120,35 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
         backend->priv->daemon = g_object_ref (daemon);
         backend->priv->device_list = up_daemon_get_device_list (daemon);
 
@@ -62,6 +62,12 @@
         /* small delay until first device is added */
         g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
  #endif
+
+-       return TRUE;
++       return G_SOURCE_CONTINUE;
+ }
+
+ /**
 @@ -214,6 +240,64 @@ up_backend_class_init (UpBackendClass *klass)
  /**
   * up_backend_init:
@@ -119,7 +125,7 @@
 +                  "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 +                  NULL);
 +
-+    return TRUE;
++    return G_SOURCE_CONTINUE;
 +}
 +
 +#endif
