@@ -71,7 +71,7 @@
 +    UpDeviceState state = UP_DEVICE_STATE_UNKNOWN;
 +    gboolean online = FALSE;
 +
-+    fp = popen("timeout 2s @TERMUX_PREFIX@/bin/termux-battery-status", "r");
++    fp = popen("@TERMUX_PREFIX@/libexec/termux-api BatteryStatus", "r");
 +    if (!fp)
 +        return TRUE;
 +
