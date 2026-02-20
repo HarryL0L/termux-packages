@@ -26,8 +26,5 @@ termux_step_pre_configure() {
 
 	CFLAGS+=" -D__TERMUX__"
 
-	# Replace placeholder prefix in source
-	sed -i "s|@TERMUX_PREFIX@|$PREFIX|g" src/dummy/up-backend.c
-
 	export TERMUX_MESON_ENABLE_SOVERSION=1
 }
