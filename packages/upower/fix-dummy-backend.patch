@@ -1,5 +1,6 @@
---- a/src/dummy/up-backend.c
-+++ b/src/dummy/up-backend.c
+diff -ruN upower/src/dummy/up-backend.c upower-e/src/dummy/up-backend.c
+--- a/src/dummy/up-backend.c       2026-02-18 21:27:31.553917142 +0530
++++ b/src/dummy/up-backend.c     2026-02-20 15:36:58.368000029 +0530
 @@ -34,15 +34,18 @@
  static void    up_backend_class_init   (UpBackendClass *klass);
  static void    up_backend_init (UpBackend              *backend);
