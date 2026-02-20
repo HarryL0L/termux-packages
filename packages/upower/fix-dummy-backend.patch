@@ -1,5 +1,3 @@
-diff --git a/src/dummy/up-backend.c b/src/dummy/up-backend.c
-index 419da7c..46a3949 100644
 --- a/src/dummy/up-backend.c
 +++ b/src/dummy/up-backend.c
 @@ -34,15 +34,18 @@
@@ -23,16 +21,7 @@ index 419da7c..46a3949 100644
  	GObject			*native;
  #endif
  };
-@@ -71,7 +74,7 @@ up_backend_changed_time_cb (UpBackend *backend)
- 
- 	/* reset time */
- 	g_object_set (device, "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC, NULL);
--	return TRUE;
-+	return G_SOURCE_CONTINUE;
- }
- 
- /**
-@@ -117,12 +120,35 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+@@ -117,7 +120,30 @@
  	backend->priv->daemon = g_object_ref (daemon);
  	backend->priv->device_list = up_daemon_get_device_list (daemon);
  
@@ -57,20 +46,14 @@ index 419da7c..46a3949 100644
 +    g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
 +    g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, backend->priv->device);
 +
-+    g_timeout_add_seconds(1, termux_update_device, backend->priv->device);
-+    g_timeout_add_seconds(5, termux_update_device, backend->priv->device);
++    termux_update_device (backend->priv->device);
++    g_timeout_add_seconds (5, termux_update_device, backend->priv->device);
 +
 +#elif defined(EGG_TEST)
  	/* small delay until first device is added */
  	g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
  #endif
- 
--	return TRUE;
-+	return G_SOURCE_CONTINUE;
- }
- 
- /**
-@@ -214,6 +240,64 @@ up_backend_class_init (UpBackendClass *klass)
+@@ -214,6 +240,64 @@
  /**
   * up_backend_init:
   **/
@@ -88,9 +71,9 @@ index 419da7c..46a3949 100644
 +    UpDeviceState state = UP_DEVICE_STATE_UNKNOWN;
 +    gboolean online = FALSE;
 +
-+    fp = popen ("termux-battery-status", "r");
++    fp = popen("timeout 2s @TERMUX_PREFIX@/bin/termux-battery-status", "r");
 +    if (!fp)
-+        return G_SOURCE_CONTINUE;
++        return TRUE;
 +
 +    size_t len = fread (buffer, 1, sizeof(buffer)-1, fp);
 +    buffer[len] = '\0';
@@ -127,7 +110,7 @@ index 419da7c..46a3949 100644
 +                  "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 +                  NULL);
 +
-+    return G_SOURCE_CONTINUE;
++    return TRUE;
 +}
 +
 +#endif
@@ -135,7 +118,7 @@ index 419da7c..46a3949 100644
  static void
  up_backend_init (UpBackend *backend)
  {
-@@ -265,9 +349,11 @@ up_backend_finalize (GObject *object)
+@@ -265,9 +349,11 @@
  	if (backend->priv->device_list != NULL)
  		g_object_unref (backend->priv->device_list);
  
@@ -150,3 +133,4 @@ index 419da7c..46a3949 100644
  #endif
  
  	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
+  
