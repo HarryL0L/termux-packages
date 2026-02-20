@@ -1,32 +1,39 @@
-diff --git a/src/dummy/up-backend.c b/src/dummy/up-backend.c
-index 419da7c..1115df0 100644
 --- a/src/dummy/up-backend.c
 +++ b/src/dummy/up-backend.c
 @@ -34,15 +34,18 @@
- static void	up_backend_class_init	(UpBackendClass	*klass);
- static void	up_backend_init	(UpBackend		*backend);
- static void	up_backend_finalize	(GObject		*object);
+ static void    up_backend_class_init   (UpBackendClass *klass);
+ static void    up_backend_init (UpBackend              *backend);
+ static void    up_backend_finalize     (GObject                *object);
 +#ifdef __TERMUX__
 +static gboolean termux_update_device (gpointer user_data);
 +#endif
- 
+
  struct UpBackendPrivate
  {
- 	UpDaemon		*daemon;
+        UpDaemon                *daemon;
 -#ifdef EGG_TEST
 +#if defined(EGG_TEST) || defined(__TERMUX__)
- 	UpDevice		*device;
+        UpDevice                *device;
  #endif
- 	UpDeviceList		*device_list; /* unused */
+        UpDeviceList            *device_list; /* unused */
 -#ifdef EGG_TEST
 +#if defined(EGG_TEST) || defined(__TERMUX__)
- 	GObject			*native;
+        GObject                 *native;
  #endif
  };
-@@ -117,7 +120,31 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
- 	backend->priv->daemon = g_object_ref (daemon);
- 	backend->priv->device_list = up_daemon_get_device_list (daemon);
- 
+@@ -71,7 +74,7 @@ up_backend_changed_time_cb (UpBackend *backend)
+
+        /* reset time */
+        g_object_set (device, "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC, NULL);
+-       return TRUE;
++       return G_SOURCE_CONTINUE;
+ }
+
+ /**
+@@ -117,7 +120,30 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+        backend->priv->daemon = g_object_ref (daemon);
+        backend->priv->device_list = up_daemon_get_device_list (daemon);
+
 -#ifdef EGG_TEST
 +#if defined(__TERMUX__)
 +
@@ -48,15 +55,14 @@ index 419da7c..1115df0 100644
 +    g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
 +    g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, backend->priv->device);
 +
-+    g_idle_add(termux_update_device, backend->priv->device);
-+
-+    g_timeout_add_seconds (5, termux_update_device, backend->priv->device);
++    g_timeout_add_seconds(1, termux_update_device, backend->priv->device);
++    g_timeout_add_seconds(5, termux_update_device, backend->priv->device);
 +
 +#elif defined(EGG_TEST)
- 	/* small delay until first device is added */
- 	g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
+        /* small delay until first device is added */
+        g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
  #endif
-@@ -214,6 +241,64 @@ up_backend_class_init (UpBackendClass *klass)
+@@ -214,6 +240,64 @@ up_backend_class_init (UpBackendClass *klass)
  /**
   * up_backend_init:
   **/
@@ -74,9 +80,9 @@ index 419da7c..1115df0 100644
 +    UpDeviceState state = UP_DEVICE_STATE_UNKNOWN;
 +    gboolean online = FALSE;
 +
-+    fp = popen ("@TERMUX_PREFIX@/bin/termux-battery-status", "r");
++    fp = popen ("termux-battery-status", "r");
 +    if (!fp)
-+        return TRUE;
++        return G_SOURCE_CONTINUE;
 +
 +    size_t len = fread (buffer, 1, sizeof(buffer)-1, fp);
 +    buffer[len] = '\0';
@@ -121,18 +127,18 @@ index 419da7c..1115df0 100644
  static void
  up_backend_init (UpBackend *backend)
  {
-@@ -265,9 +350,11 @@ up_backend_finalize (GObject *object)
- 	if (backend->priv->device_list != NULL)
- 		g_object_unref (backend->priv->device_list);
- 
+@@ -265,9 +349,11 @@ up_backend_finalize (GObject *object)
+        if (backend->priv->device_list != NULL)
+                g_object_unref (backend->priv->device_list);
+
 -#ifdef EGG_TEST
--	g_object_unref (backend->priv->native);
--	g_object_unref (backend->priv->device);
+-       g_object_unref (backend->priv->native);
+-       g_object_unref (backend->priv->device);
 +#if defined(EGG_TEST) || defined(__TERMUX__)
 +    if (backend->priv->native)
 +        g_object_unref (backend->priv->native);
 +    if (backend->priv->device)
 +        g_object_unref (backend->priv->device);
  #endif
- 
- 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
+
+        G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
