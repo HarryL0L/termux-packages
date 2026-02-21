@@ -1,0 +1,187 @@
+diff --git a/src/dummy/up-backend.c b/src/dummy/up-backend.c
+index 419da7c..39bdb28 100644
+--- a/src/dummy/up-backend.c
++++ b/src/dummy/up-backend.c
+@@ -23,6 +23,7 @@
+ 
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <string.h>
+ #include <math.h>
+ #include <glib/gi18n.h>
+ #include <gio/gio.h>
+@@ -38,11 +39,11 @@ static void	up_backend_finalize	(GObject		*object);
+ struct UpBackendPrivate
+ {
+ 	UpDaemon		*daemon;
+-#ifdef EGG_TEST
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ 	UpDevice		*device;
+ #endif
+ 	UpDeviceList		*device_list; /* unused */
+-#ifdef EGG_TEST
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ 	GObject			*native;
+ #endif
+ };
+@@ -57,7 +58,110 @@ static guint signals [SIGNAL_LAST] = { 0 };
+ 
+ G_DEFINE_TYPE_WITH_PRIVATE (UpBackend, up_backend, G_TYPE_OBJECT)
+ 
+-#ifdef EGG_TEST
++#ifdef __TERMUX__
++
++#ifndef TERMUX_BATTERY_STATUS_PATH
++#define TERMUX_BATTERY_STATUS_PATH "@TERMUX_PREFIX@/bin/termux-battery-status"
++#endif
++
++typedef struct {
++    gdouble  percentage;
++    gboolean plugged;
++    gboolean charging;
++    gboolean full;
++} TermuxBatteryInfo;
++
++static gboolean
++termux_battery_query (TermuxBatteryInfo *info)
++{
++    gchar  *stdout_buf = NULL;
++    gint    exit_status = 0;
++    GError *error = NULL;
++
++    gchar *argv[] = { TERMUX_BATTERY_STATUS_PATH, NULL };
++
++    if (!g_spawn_sync (NULL,
++                       argv,
++                       NULL,
++                       G_SPAWN_STDERR_TO_DEV_NULL,
++                       NULL,
++                       NULL,
++                       &stdout_buf,
++                       NULL,
++                       &exit_status,
++                       &error)) {
++        g_clear_error (&error);
++        g_free (stdout_buf);
++        return FALSE;
++    }
++
++    if (exit_status != 0 || stdout_buf == NULL) {
++        g_free (stdout_buf);
++        return FALSE;
++    }
++
++    info->percentage = 0.0;
++    info->plugged = FALSE;
++    info->charging = FALSE;
++    info->full = FALSE;
++
++    gchar *p;
++
++    p = strstr (stdout_buf, "\"percentage\"");
++    if (p) {
++        p = strchr (p, ':');
++        if (p)
++            info->percentage = g_ascii_strtod (p + 1, NULL);
++    }
++
++    p = strstr (stdout_buf, "\"plugged\"");
++    if (p) {
++        if (strstr (p, "UNPLUGGED"))
++            info->plugged = FALSE;
++        else
++            info->plugged = TRUE;
++    }
++
++    p = strstr (stdout_buf, "\"status\"");
++    if (p) {
++        if (strstr (p, "CHARGING"))
++            info->charging = TRUE;
++        else if (strstr (p, "FULL"))
++            info->full = TRUE;
++    }
++
++    g_free (stdout_buf);
++    return TRUE;
++}
++
++static void
++up_backend_update_device (UpBackend *backend)
++{
++    TermuxBatteryInfo info;
++    UpDeviceState state;
++
++    if (!termux_battery_query (&info))
++        return;
++
++    if (info.full)
++        state = UP_DEVICE_STATE_FULLY_CHARGED;
++    else if (info.charging)
++        state = UP_DEVICE_STATE_CHARGING;
++    else
++        state = UP_DEVICE_STATE_DISCHARGING;
++
++    g_object_set (backend->priv->device,
++                  "percentage",  info.percentage,
++                  "state",       state,
++                  "online",      info.plugged || info.full,
++                  "update-time",
++                  (guint64) g_get_real_time () / G_USEC_PER_SEC,
++                  NULL);
++}
++
++#endif /* __TERMUX__ */
++
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ /**
+  * up_backend_changed_time_cb:
+  **/
+@@ -83,6 +187,29 @@ up_backend_add_cb (UpBackend *backend)
+ 	gboolean ret;
+ 	guint timer_id;
+ 
++#ifdef __TERMUX__
++
++    up_backend_update_device (backend);
++
++    ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
++    if (!ret) {
++        g_warning ("failed to coldplug");
++        return FALSE;
++    }
++
++    g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0,
++                   backend->priv->device);
++
++    timer_id = g_timeout_add_seconds (30,
++                                      (GSourceFunc) up_backend_update_device,
++                                      backend);
++    g_source_set_name_by_id (timer_id,
++                             "[upower] termux battery poll");
++
++    return FALSE;
++
++#else
++
+ 	/* coldplug */
+ 	ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
+ 	if (!ret) {
+@@ -98,8 +225,8 @@ up_backend_add_cb (UpBackend *backend)
+ 	g_source_set_name_by_id (timer_id, "[upower] up_backend_changed_time_cb (dummy)");
+ out:
+ 	return FALSE;
+-}
+ #endif
++}
+ 
+ /**
+  * up_backend_coldplug:
+@@ -117,7 +244,7 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+ 	backend->priv->daemon = g_object_ref (daemon);
+ 	backend->priv->device_list = up_daemon_get_device_list (daemon);
+ 
+-#ifdef EGG_TEST
++#if defined(__TERMUX__) || defined(EGG_TEST)
+ 	/* small delay until first device is added */
+ 	g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
+ #endif
