@@ -1,41 +1,38 @@
 diff --git a/src/dummy/up-backend.c b/src/dummy/up-backend.c
-index 419da7c..183f5f9 100644
+index 419da7c..39bdb28 100644
 --- a/src/dummy/up-backend.c
 +++ b/src/dummy/up-backend.c
 @@ -23,6 +23,7 @@
- 
+
  #include <stdlib.h>
  #include <stdio.h>
 +#include <string.h>
  #include <math.h>
  #include <glib/gi18n.h>
  #include <gio/gio.h>
-@@ -38,13 +39,9 @@ static void	up_backend_finalize	(GObject		*object);
+@@ -38,11 +39,11 @@ static void up_backend_finalize     (GObject                *object);
  struct UpBackendPrivate
  {
- 	UpDaemon		*daemon;
+        UpDaemon                *daemon;
 -#ifdef EGG_TEST
- 	UpDevice		*device;
--#endif
- 	UpDeviceList		*device_list; /* unused */
++#if defined(EGG_TEST) || defined(__TERMUX__)
+        UpDevice                *device;
+ #endif
+        UpDeviceList            *device_list; /* unused */
 -#ifdef EGG_TEST
- 	GObject			*native;
--#endif
++#if defined(EGG_TEST) || defined(__TERMUX__)
+        GObject                 *native;
+ #endif
  };
- 
- enum {
-@@ -57,49 +54,177 @@ static guint signals [SIGNAL_LAST] = { 0 };
- 
+@@ -57,7 +58,110 @@ static guint signals [SIGNAL_LAST] = { 0 };
+
  G_DEFINE_TYPE_WITH_PRIVATE (UpBackend, up_backend, G_TYPE_OBJECT)
- 
+
 -#ifdef EGG_TEST
--/**
-- * up_backend_changed_time_cb:
-- **/
 +#ifdef __TERMUX__
 +
 +#ifndef TERMUX_BATTERY_STATUS_PATH
-+#  define TERMUX_BATTERY_STATUS_PATH "@TERMUX_PREFIX@/bin/termux-battery-status"
++#define TERMUX_BATTERY_STATUS_PATH "@TERMUX_PREFIX@/bin/termux-battery-status"
 +#endif
 +
 +typedef struct {
@@ -45,22 +42,9 @@ index 419da7c..183f5f9 100644
 +    gboolean full;
 +} TermuxBatteryInfo;
 +
-+static const gchar *
-+termux_strip (gchar *s)
-+{
-+        gchar *p = s;
-+        while (*p == ' ' || *p == '"' || *p == '\t') p++;
-+        gchar *e = p;
-+        while (*e && *e != '"' && *e != ',' && *e != '\r' && *e != '\n') e++;
-+        *e = '\0';
-+        return p;
-+}
-+
- static gboolean
--up_backend_changed_time_cb (UpBackend *backend)
++static gboolean
 +termux_battery_query (TermuxBatteryInfo *info)
- {
--	UpDevice *device;
++{
 +    gchar  *stdout_buf = NULL;
 +    gint    exit_status = 0;
 +    GError *error = NULL;
@@ -77,35 +61,30 @@ index 419da7c..183f5f9 100644
 +                       NULL,
 +                       &exit_status,
 +                       &error)) {
-+        g_warning ("Failed to run termux-battery-status: %s",
-+                   error ? error->message : "unknown error");
 +        g_clear_error (&error);
 +        g_free (stdout_buf);
 +        return FALSE;
 +    }
 +
 +    if (exit_status != 0 || stdout_buf == NULL) {
-+        g_warning ("termux-battery-status exited with status %d",
-+                   exit_status);
 +        g_free (stdout_buf);
 +        return FALSE;
 +    }
 +
-+    /* Defaults */
 +    info->percentage = 0.0;
 +    info->plugged = FALSE;
 +    info->charging = FALSE;
 +    info->full = FALSE;
 +
-+    /* Parse percentage */
-+    gchar *p = strstr (stdout_buf, "\"percentage\"");
++    gchar *p;
++
++    p = strstr (stdout_buf, "\"percentage\"");
 +    if (p) {
 +        p = strchr (p, ':');
 +        if (p)
 +            info->percentage = g_ascii_strtod (p + 1, NULL);
 +    }
 +
-+    /* Parse plugged */
 +    p = strstr (stdout_buf, "\"plugged\"");
 +    if (p) {
 +        if (strstr (p, "UNPLUGGED"))
@@ -114,7 +93,6 @@ index 419da7c..183f5f9 100644
 +            info->plugged = TRUE;
 +    }
 +
-+    /* Parse status */
 +    p = strstr (stdout_buf, "\"status\"");
 +    if (p) {
 +        if (strstr (p, "CHARGING"))
@@ -126,191 +104,84 @@ index 419da7c..183f5f9 100644
 +    g_free (stdout_buf);
 +    return TRUE;
 +}
- 
--	//FIXME!
--	device = NULL;
++
 +static void
 +up_backend_update_device (UpBackend *backend)
 +{
-+        TermuxBatteryInfo info;
-+        UpDeviceState     state;
++    TermuxBatteryInfo info;
++    UpDeviceState state;
 +
-+        if (!termux_battery_query (&info))
-+                return;
++    if (!termux_battery_query (&info))
++        return;
 +
-+        if (info.full)
-+                state = UP_DEVICE_STATE_FULLY_CHARGED;
-+        else if (info.charging)
-+                state = UP_DEVICE_STATE_CHARGING;
-+        else
-+                state = UP_DEVICE_STATE_DISCHARGING;
++    if (info.full)
++        state = UP_DEVICE_STATE_FULLY_CHARGED;
++    else if (info.charging)
++        state = UP_DEVICE_STATE_CHARGING;
++    else
++        state = UP_DEVICE_STATE_DISCHARGING;
 +
-+        g_object_set (backend->priv->device,
-+              "percentage",  info.percentage,
-+              "state",       state,
-+              "online",      info.plugged || info.full,
-+              "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
-+              NULL);
++    g_object_set (backend->priv->device,
++                  "percentage",  info.percentage,
++                  "state",       state,
++                  "online",      info.plugged || info.full,
++                  "update-time",
++                  (guint64) g_get_real_time () / G_USEC_PER_SEC,
++                  NULL);
 +}
- 
--	/* reset time */
--	g_object_set (device, "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC, NULL);
--	return TRUE;
-+static gboolean
-+up_backend_poll_cb (UpBackend *backend)
-+{
-+        up_backend_update_device (backend);
-+        return G_SOURCE_CONTINUE;
- }
- 
--/**
-- * up_backend_add_cb:
-- **/
- static gboolean
- up_backend_add_cb (UpBackend *backend)
- {
--	gboolean ret;
--	guint timer_id;
--
--	/* coldplug */
--	ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
--	if (!ret) {
--		g_warning ("failed to coldplug");
--		goto out;
--	}
-+        up_backend_update_device (backend);
-+
-+        if (!g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL)) {
-+                g_warning ("failed to coldplug Termux battery device");
-+                return G_SOURCE_REMOVE;
-+        }
-+
-+        g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0,
-+                       backend->priv->device);
-+
-+        guint timer_id = g_timeout_add_seconds (30,
-+                                                (GSourceFunc) up_backend_poll_cb,
-+                                                backend);
-+        g_source_set_name_by_id (timer_id, "[upower] up_backend_poll_cb (termux)");
-+        return G_SOURCE_REMOVE;
-+}
- 
--	/* emit */
--	g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, backend->priv->device);
-+#else /* !__TERMUX__ */
- 
--	/* setup poll */
--	timer_id = g_timeout_add_seconds (2, (GSourceFunc) up_backend_changed_time_cb, backend);
--	g_source_set_name_by_id (timer_id, "[upower] up_backend_changed_time_cb (dummy)");
-+#ifdef EGG_TEST
-+up_backend_changed_time_cb:
-+{
-+        UpDevice *device;
-+        device = NULL; //FIXME!
-+        g_object_set (device, "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC, NULL);
-+        return TRUE;
-+}
-+up_backend_add_cb:
-+{
-+        gboolean ret;
-+        guint timer_id;
-+        ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
-+        if (!ret) {
-+                g_warning ("failed to coldplug");
-+                goto out;
-+        }
-+        g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, backend->priv->device);
-+        timer_id = g_timeout_add_seconds (2, (GSourceFunc) up_backend_changed_time_cb, backend);
-+        g_source_set_name_by_id (timer_id, "[upower] up_backend_changed_time_cb (dummy)");
- out:
--	return FALSE;
-+        return FALSE;
- }
--#endif
 +
 +#endif /* __TERMUX__ */
- 
++
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ /**
+  * up_backend_changed_time_cb:
+  **/
+@@ -83,6 +187,29 @@ up_backend_add_cb (UpBackend *backend)
+        gboolean ret;
+        guint timer_id;
+
++#ifdef __TERMUX__
++
++    up_backend_update_device (backend);
++
++    ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
++    if (!ret) {
++        g_warning ("failed to coldplug");
++        return FALSE;
++    }
++
++    g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0,
++                   backend->priv->device);
++
++    timer_id = g_timeout_add_seconds (30,
++                                      (GSourceFunc) up_backend_update_device,
++                                      backend);
++    g_source_set_name_by_id (timer_id,
++                             "[upower] termux battery poll");
++
++    return FALSE;
++
++#else
++
+        /* coldplug */
+        ret = g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
+        if (!ret) {
+@@ -98,8 +225,8 @@ up_backend_add_cb (UpBackend *backend)
+        g_source_set_name_by_id (timer_id, "[upower] up_backend_changed_time_cb (dummy)");
+ out:
+        return FALSE;
+-}
+ #endif
++}
+
  /**
   * up_backend_coldplug:
-@@ -117,7 +242,7 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
- 	backend->priv->daemon = g_object_ref (daemon);
- 	backend->priv->device_list = up_daemon_get_device_list (daemon);
- 
+@@ -117,7 +244,7 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+        backend->priv->daemon = g_object_ref (daemon);
+        backend->priv->device_list = up_daemon_get_device_list (daemon);
+
 -#ifdef EGG_TEST
 +#if defined(__TERMUX__) || defined(EGG_TEST)
- 	/* small delay until first device is added */
- 	g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
+        /* small delay until first device is added */
+        g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
  #endif
-@@ -220,31 +345,32 @@ up_backend_init (UpBackend *backend)
- 	backend->priv = up_backend_get_instance_private (backend);
- 	backend->priv->daemon = NULL;
- 	backend->priv->device_list = NULL;
--#ifdef EGG_TEST
--	backend->priv->native = g_object_new (UP_TYPE_DEVICE, NULL);
--	backend->priv->device = up_device_new ();
--
--	/* setup dummy */
--	g_object_set (backend->priv->device,
--		      "native-path", "/hal/blows/goats",
--		      "vendor", "hughsie",
--		      "model", "BAT1",
--		      "serial", "0001",
--		      "type", UP_DEVICE_KIND_BATTERY,
--		      "online", FALSE,
--		      "power-supply", TRUE,
--		      "is-present", TRUE,
--		      "is-rechargeable", TRUE,
--		      "has-history", FALSE,
--		      "has-statistics", FALSE,
--		      "state", UP_DEVICE_STATE_DISCHARGING,
--		      "energy", 0.0f,
--		      "energy-empty", 0.0f,
--		      "energy-full", 10.0f,
--		      "energy-full-design", 10.0f,
--		      "energy-rate", 5.0f,
--		      "percentage", 50.0f,
--		      NULL);
-+#if defined(__TERMUX__) || defined(EGG_TEST)
-+        backend->priv->native = g_object_new (UP_TYPE_DEVICE, NULL);
-+        backend->priv->device = up_device_new ();
-+        g_object_set (backend->priv->device,
-+                      "native-path",        "/sys/class/power_supply/battery",
-+                      "vendor",             "Android",
-+                      "model",              "Battery",
-+                      "serial",             "0001",
-+                      "type",               UP_DEVICE_KIND_BATTERY,
-+                      "power-supply",       TRUE,
-+                      "is-present",         TRUE,
-+                      "is-rechargeable",    TRUE,
-+                      "has-history",        FALSE,
-+                      "has-statistics",     FALSE,
-+                      "online",             FALSE,
-+                      "state",              UP_DEVICE_STATE_DISCHARGING,
-+                      "energy",             5.0f,
-+                      "energy-empty",       0.0f,
-+                      "energy-full",        10.0f,
-+                      "energy-full-design", 10.0f,
-+                      "energy-rate",        1.0f,
-+                      "percentage",         50.0f,
-+                      NULL);
-+#else
-+        backend->priv->native = NULL;
-+        backend->priv->device = NULL;
- #endif
- }
- 
-@@ -265,9 +391,11 @@ up_backend_finalize (GObject *object)
- 	if (backend->priv->device_list != NULL)
- 		g_object_unref (backend->priv->device_list);
- 
--#ifdef EGG_TEST
--	g_object_unref (backend->priv->native);
--	g_object_unref (backend->priv->device);
-+#if defined(__TERMUX__) || defined(EGG_TEST)
-+        if (backend->priv->native != NULL)
-+                g_object_unref (backend->priv->native);
-+        if (backend->priv->device != NULL)
-+                g_object_unref (backend->priv->device);
- #endif
- 
- 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
