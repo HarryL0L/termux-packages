@@ -1,0 +1,201 @@
+diff --git a/src/dummy/up-backend.c b/src/dummy/up-backend.c
+index 419da7c..c782934 100644
+--- a/src/dummy/up-backend.c
++++ b/src/dummy/up-backend.c
+@@ -35,14 +35,24 @@ static void	up_backend_class_init	(UpBackendClass	*klass);
+ static void	up_backend_init	(UpBackend		*backend);
+ static void	up_backend_finalize	(GObject		*object);
+ 
++#ifdef __TERMUX__
++typedef struct {
++    UpBackend *backend;
++    gboolean   first_run;
++} TermuxUpdateData;
++
++static void     termux_battery_cb    (GObject *source, GAsyncResult *res, gpointer user_data);
++static gboolean termux_update_device (gpointer user_data);
++#endif
++
+ struct UpBackendPrivate
+ {
+ 	UpDaemon		*daemon;
+-#ifdef EGG_TEST
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ 	UpDevice		*device;
+ #endif
+ 	UpDeviceList		*device_list; /* unused */
+-#ifdef EGG_TEST
++#if defined(EGG_TEST) || defined(__TERMUX__)
+ 	GObject			*native;
+ #endif
+ };
+@@ -117,7 +127,56 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
+ 	backend->priv->daemon = g_object_ref (daemon);
+ 	backend->priv->device_list = up_daemon_get_device_list (daemon);
+ 
+-#ifdef EGG_TEST
++#if defined(__TERMUX__)
++
++    backend->priv->native = g_object_new (G_TYPE_OBJECT, NULL);
++    backend->priv->device = up_device_new (daemon, backend->priv->native);
++
++    g_object_set (backend->priv->device,
++                  "native-path",    "/org/termux/BAT0",
++                  "vendor",         "Android",
++                  "model",          "Battery",
++                  "type",           UP_DEVICE_KIND_BATTERY,
++                  "power-supply",   TRUE,
++                  "is-present",     TRUE,
++                  "is-rechargeable",TRUE,
++                  "has-history",    FALSE,
++                  "has-statistics", FALSE,
++                  NULL);
++
++    g_initable_init (G_INITABLE (backend->priv->device), NULL, NULL);
++
++    /* Do NOT emit SIGNAL_DEVICE_ADDED here — termux_battery_cb does it
++       after the first real state is fetched, preventing the false
++       "plugged in but still discharging" notification. */
++    {
++        GSubprocess *proc;
++        GError *error = NULL;
++        TermuxUpdateData *data;
++
++        proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE,
++                                 &error,
++                                 "@TERMUX_PREFIX@/bin/termux-battery-status",
++                                 NULL);
++        if (proc) {
++            data = g_new0 (TermuxUpdateData, 1);
++            data->backend   = g_object_ref (backend);
++            data->first_run = TRUE; /* signals the callback to emit */
++            g_subprocess_communicate_utf8_async (proc,
++                                                 NULL,
++                                                 NULL,
++                                                 termux_battery_cb,
++                                                 data);
++        } else {
++            g_warning ("Failed to spawn termux-battery-status: %s", error->message);
++            g_clear_error (&error);
++        }
++    }
++
++    g_timeout_add_seconds (5, termux_update_device, backend);
++
++
++#elif defined(EGG_TEST)
+ 	/* small delay until first device is added */
+ 	g_timeout_add_seconds (1, (GSourceFunc) up_backend_add_cb, backend);
+ #endif
+@@ -214,6 +273,111 @@ up_backend_class_init (UpBackendClass *klass)
+ /**
+  * up_backend_init:
+  **/
++#ifdef __TERMUX__
++
++static void
++termux_battery_cb (GObject *source, GAsyncResult *res, gpointer user_data)
++{
++    TermuxUpdateData *data = user_data;
++    UpBackend *backend = data->backend;
++    UpDevice *device = backend->priv->device;
++    GSubprocess *proc = G_SUBPROCESS (source);
++    gchar *stdout_buf = NULL;
++    GError *error = NULL;
++
++    gdouble percentage = 0.0;
++    char status[64] = {0};
++    char plugged[64] = {0};
++    UpDeviceState state = UP_DEVICE_STATE_UNKNOWN;
++    gboolean online = FALSE;
++    char *p;
++
++    if (!g_subprocess_communicate_utf8_finish (proc, res,
++                                               &stdout_buf, NULL, &error)) {
++        g_warning ("termux-battery-status failed: %s", error->message);
++        g_clear_error (&error);
++        goto out;
++    }
++
++    if (!g_subprocess_get_successful (proc) || !stdout_buf)
++        goto out;
++
++    p = strstr (stdout_buf, "\"percentage\"");
++    if (p)
++        sscanf (p, "\"percentage\": %lf", &percentage);
++
++    p = strstr (stdout_buf, "\"status\"");
++    if (p)
++        sscanf (p, "\"status\": \"%63[^\"]\"", status);
++
++    p = strstr (stdout_buf, "\"plugged\"");
++    if (p)
++        sscanf (p, "\"plugged\": \"%63[^\"]\"", plugged);
++
++    if (g_strcmp0 (status, "CHARGING") == 0)
++        state = UP_DEVICE_STATE_CHARGING;
++    else if (g_strcmp0 (status, "NOT_CHARGING") == 0)
++        state = UP_DEVICE_STATE_DISCHARGING;
++    else if (g_strcmp0 (status, "FULL") == 0)
++        state = UP_DEVICE_STATE_FULLY_CHARGED;
++
++    online = (g_strcmp0 (plugged, "AC")      == 0 ||
++              g_strcmp0 (plugged, "USB")      == 0 ||
++              g_strcmp0 (plugged, "WIRELESS") == 0);
++
++    g_object_set (device,
++                  "percentage",  percentage,
++                  "state",       state,
++                  "online",      online,
++                  "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
++                  NULL);
++
++    /* Only announce the device after state is correctly set */
++    if (data->first_run) {
++        data->first_run = FALSE;
++        g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
++    }
++
++out:
++    g_free (stdout_buf);
++    g_object_unref (proc);
++    g_object_unref (data->backend);
++    g_free (data);
++}
++
++static gboolean
++termux_update_device (gpointer user_data)
++{
++    UpBackend *backend = UP_BACKEND (user_data);
++    GSubprocess *proc;
++    GError *error = NULL;
++    TermuxUpdateData *data;
++
++    proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE,
++                             &error,
++                             "@TERMUX_PREFIX@/bin/termux-battery-status",
++                             NULL);
++    if (!proc) {
++        g_warning ("Failed to spawn termux-battery-status: %s", error->message);
++        g_clear_error (&error);
++        return G_SOURCE_CONTINUE;
++    }
++
++    data = g_new0 (TermuxUpdateData, 1);
++    data->backend   = g_object_ref (backend);
++    data->first_run = FALSE; /* recurring polls never emit SIGNAL_DEVICE_ADDED */
++
++    g_subprocess_communicate_utf8_async (proc,
++                                         NULL,
++                                         NULL,
++                                         termux_battery_cb,
++                                         data);
++
++    return G_SOURCE_CONTINUE;
++}
++
++#endif
++
+ static void
+ up_backend_init (UpBackend *backend)
+ {
