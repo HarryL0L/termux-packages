@@ -1,0 +1,100 @@
+--- a/CMakeLists.txt 2026-01-13 18:35:58.000000000 +0530
++++ b/CMakeLists.txt       2026-01-18 09:24:57.886168259 +0530
+@@ -36,7 +36,6 @@
+     Core
+     Concurrent
+     DBus
+-    PrintSupport
+     QuickWidgets
+     Widgets
+     WaylandClient
+@@ -49,7 +48,6 @@
+
+ if (Qt6_VERSION VERSION_GREATER_EQUAL "6.10.0")
+     find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+-    find_package(Qt6PrintSupportPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+ endif()
+
+ find_package(KF6 ${KF6_MIN_VERSION} REQUIRED
+
+--- a/src/CMakeLists.txt     2026-01-13 18:35:58.000000000 +0530
++++ b/src/CMakeLists.txt   2026-01-17 22:13:08.897538094 +0530
+@@ -57,8 +57,6 @@
+     notificationinhibition.cpp
+     notificationinhibition.h
+     outputsmodel.cpp outputsmodel.h
+-    print.cpp
+-    print.h
+     quickdialog.cpp quickdialog.h
+     remotedesktop.cpp
+     remotedesktopdialog.cpp
+@@ -107,13 +105,6 @@
+     EXPORT XDPKDE
+ )
+ ecm_qt_declare_logging_category(xdg_desktop_portal_kde_SRCS
+-    IDENTIFIER "XdgDesktopPortalKdeNotificationInhibition"
+-    CATEGORY_NAME "xdp-kde-notificationinhibition"
+-    HEADER notificationinhibition_debug.h
+-    DESCRIPTION "XDG Desktop Portal KDE Notification Inhibition"
+-    EXPORT XDPKDE
+-)
+-ecm_qt_declare_logging_category(xdg_desktop_portal_kde_SRCS
+     IDENTIFIER "XdgDesktopPortalKdeAccess"
+     CATEGORY_NAME "xdp-kde-access"
+     HEADER access_debug.h
+@@ -337,7 +328,6 @@
+     Qt::GuiPrivate
+     Qt::DBus
+     Qt::Concurrent
+-    Qt::PrintSupport
+     Qt::QuickWidgets
+     Qt::Widgets
+     Qt::WaylandClient
+@@ -360,7 +350,7 @@
+     Wayland::Client
+     PkgConfig::XKB
+ )
+-target_link_libraries(xdg-desktop-portal-kde PRIVATE Qt::PrintSupportPrivate Qt::GuiPrivate)
++target_link_libraries(xdg-desktop-portal-kde PRIVATE Qt::GuiPrivate)
+
+ install(TARGETS xdg-desktop-portal-kde DESTINATION ${KDE_INSTALL_LIBEXECDIR})
+
+
+--- a/src/desktopportal.cpp  2026-01-13 18:35:58.000000000 +0530
++++ b/src/desktopportal.cpp        2026-01-17 22:14:28.021538099 +0530
+@@ -21,7 +21,6 @@
+ #include "inhibit.h"
+ #include "inputcapture.h"
+ #include "notification.h"
+-#include "print.h"
+ #include "remotedesktop.h"
+ #include "screencast.h"
+ #include "screenshot.h"
+@@ -38,7 +37,6 @@
+     , m_fileChooser(new FileChooserPortal(this))
+     , m_inhibit(new InhibitPortal(this))
+     , m_notification(new NotificationPortal(this))
+-    , m_print(new PrintPortal(this))
+     , m_settings(new SettingsPortal(this))
+     , m_dynamicLauncher(new DynamicLauncherPortal(this))
+ {
+
+--- a/src/desktopportal.h    2026-01-13 18:35:58.000000000 +0530
++++ b/src/desktopportal.h  2026-01-17 22:15:35.425538103 +0530
+@@ -20,7 +20,6 @@
+ class FileChooserPortal;
+ class InhibitPortal;
+ class NotificationPortal;
+-class PrintPortal;
+ class ScreenshotPortal;
+ class SettingsPortal;
+ class ScreenCastPortal;
+@@ -42,7 +41,6 @@
+     FileChooserPortal *const m_fileChooser;
+     InhibitPortal *const m_inhibit;
+     NotificationPortal *const m_notification;
+-    PrintPortal *const m_print;
+     ScreenshotPortal *m_screenshot = nullptr;
+     SettingsPortal *const m_settings;
+     ScreenCastPortal *m_screenCast = nu
+     llptr;
