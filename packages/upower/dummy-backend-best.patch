@@ -38,7 +38,7 @@ index 419da7c..947ef5e 100644
 +                  "vendor", "Android",
 +                  "model", "Battery",
 +                  "type", UP_DEVICE_KIND_BATTERY,
-+                  "power-supply", TRUE,
++                  "power-supply", FALSE,
 +                  "is-present", TRUE,
 +                  "is-rechargeable", TRUE,
 +                  "has-history", FALSE,
