@@ -1,0 +1,9 @@
+--- a/src/dummy/up-native.c
++++ b/src/dummy/up-native.c
+@@ -35,5 +35,5 @@
+ const gchar *
+ up_native_get_native_path (GObject *object)
+ {
+-	return "/sys/dummy";
++	return "/org/termux/BAT0";
+ }
