@@ -144,5 +144,5 @@ index 82de1a9..545925b 100644
  up_native_get_native_path (GObject *object)
  {
 -	return "/sys/dummy";
-+	return "/org/termux/BAT0";
++	return "/org/termux";
  }
