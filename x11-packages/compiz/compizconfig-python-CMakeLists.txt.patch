@@ -1,0 +1,14 @@
+diff --git a/compizconfig/compizconfig-python/CMakeLists.txt b/compizconfig/compizconfig-python/CMakeLists.txt
+index f1f6bc2..309c075 100644
+--- a/compizconfig/compizconfig-python/CMakeLists.txt
++++ b/compizconfig/compizconfig-python/CMakeLists.txt
+@@ -5,7 +5,8 @@ set (CMAKE_PROJECT_NAME compizconfig-python)
+ execute_process (COMMAND uname -p OUTPUT_VARIABLE PROC_ARCH)
+ string (REPLACE "\n" "" PROC_ARCH ${PROC_ARCH})
+ 
+-find_package (Python3 COMPONENTS Interpreter Development REQUIRED)
++find_package (Python3 COMPONENTS Development)
++find_package (Python3 COMPONENTS Interpreter REQUIRED)
+ 
+ set (COMPIZCONFIG_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/compizconfig/libcompizconfig/include)
+ 
