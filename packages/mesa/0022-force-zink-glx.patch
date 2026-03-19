@@ -1,5 +1,5 @@
 diff --git a/src/glx/dri_common.c b/src/glx/dri_common.c
-index 02aa1371af1..00f356e7fbb 100644
+index 02aa1371af1..c8a0b7d5530 100644
 --- a/src/glx/dri_common.c
 +++ b/src/glx/dri_common.c
 @@ -950,6 +950,8 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
@@ -11,7 +11,7 @@ index 02aa1371af1..00f356e7fbb 100644
     switch (psc->display->driver) {
     case GLX_DRIVER_DRI3:
        type = DRI_SCREEN_DRI3;
-@@ -964,30 +966,24 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
+@@ -964,30 +966,31 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
        UNREACHABLE("unknown glx driver type");
     }
 
@@ -20,15 +20,22 @@ index 02aa1371af1..00f356e7fbb 100644
 -                                                 type,
 -                                                 &driver_configs, driver_name_is_inferred,
 -                                                 psc->display->has_multibuffer, psc);
-+fprintf(stderr, "ZINK PATCH: skipping driCreateNewScreen3\n");
-+psc->frontend_screen = NULL;
-+driver_configs = NULL;
++fprintf(stderr, "ZINK PATCH: creating screen via driCreateNewScreen3 (Kopper)\n");
 
 -   if (psc->frontend_screen == NULL) {
 -      goto handle_error;
 -   }
++psc->frontend_screen = driCreateNewScreen3(
++    screen, fd,
++    loader_extensions,
++    DRI_SCREEN_KOPPER,
++    &driver_configs,
++    driver_name_is_inferred,
++    psc->display->has_multibuffer,
++    psc);
++
 +if (psc->frontend_screen == NULL) {
-+    fprintf(stderr, "ZINK PATCH: allow NULL frontend_screen\n");
++    fprintf(stderr, "ZINK PATCH: failed to create Kopper screen\n");
 +}
 
 -   configs = driConvertConfigs(psc->configs, driver_configs);
