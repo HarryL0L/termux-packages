@@ -1,0 +1,54 @@
+diff --git a/src/glx/dri_common.c b/src/glx/dri_common.c
+index 02aa1371af1..00f356e7fbb 100644
+--- a/src/glx/dri_common.c
++++ b/src/glx/dri_common.c
+@@ -950,6 +950,8 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
+       return false;
+
+    enum dri_screen_type type;
++fprintf(stderr, "ZINK PATCH: forcing GLX_DRIVER_ZINK_YES\n");
++psc->display->driver = GLX_DRIVER_ZINK_YES;
+    switch (psc->display->driver) {
+    case GLX_DRIVER_DRI3:
+       type = DRI_SCREEN_DRI3;
+@@ -964,30 +966,24 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
+       UNREACHABLE("unknown glx driver type");
+    }
+
+-   psc->frontend_screen = driCreateNewScreen3(screen, fd,
+-                                                 loader_extensions,
+-                                                 type,
+-                                                 &driver_configs, driver_name_is_inferred,
+-                                                 psc->display->has_multibuffer, psc);
++fprintf(stderr, "ZINK PATCH: skipping driCreateNewScreen3\n");
++psc->frontend_screen = NULL;
++driver_configs = NULL;
+
+-   if (psc->frontend_screen == NULL) {
+-      goto handle_error;
+-   }
++if (psc->frontend_screen == NULL) {
++    fprintf(stderr, "ZINK PATCH: allow NULL frontend_screen\n");
++}
+
+-   configs = driConvertConfigs(psc->configs, driver_configs);
+-   visuals = driConvertConfigs(psc->visuals, driver_configs);
++configs = psc->configs;
++visuals = psc->visuals;
+
+-   if (!configs || !visuals) {
++   if (0 && (!configs || !visuals)) {
+        ErrorMessageF("No matching fbConfigs or visuals found\n");
+        goto handle_error;
+    }
+
+-   glx_config_destroy_list(psc->configs);
+-   psc->configs = configs;
+-   glx_config_destroy_list(psc->visuals);
+-   psc->visuals = visuals;
+
+-   psc->driver_configs = driver_configs;
++   psc->driver_configs = NULL;
+
+    psc->vtable = &dri_screen_vtable;
+    psc->driScreen.bindTexImage = dri_bind_tex_image;
