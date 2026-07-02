@@ -3,9 +3,9 @@ TERMUX_PKG_HOMEPAGE=https://www.rust-lang.org/
 TERMUX_PKG_DESCRIPTION="Systems programming language focused on safety, speed and concurrency"
 TERMUX_PKG_LICENSE="MIT"
 TERMUX_PKG_MAINTAINER="@termux"
-TERMUX_PKG_VERSION="1.93.1"
+TERMUX_PKG_VERSION="1.96.1"
 TERMUX_PKG_SRCURL=https://static.rust-lang.org/dist/rustc-${TERMUX_PKG_VERSION}-src.tar.xz
-TERMUX_PKG_SHA256=848c9171212c998c069e6979a205a1a44fa3235a463696d62e24701c83596ce0
+TERMUX_PKG_SHA256=77a6ff3003a4ad0cb00697b043c879e3e1a15d945b1a1f63818903bfc3fa8b98
 TERMUX_PKG_DEPENDS="clang, libandroid-execinfo, libc++, libllvm (<< $TERMUX_LLVM_NEXT_MAJOR_VERSION), lld, openssl, zlib"
 TERMUX_PKG_BUILD_DEPENDS="wasi-libc"
 TERMUX_PKG_SUGGESTS="rust-analyzer"
@@ -144,7 +144,7 @@ termux_step_configure() {
 	# like 30 to 40 + minutes ... so lets get it right
 
 	# upstream tests build using versions N and N-1
-	local BOOTSTRAP_VERSION=1.93.0
+	local BOOTSTRAP_VERSION=1.96.0
 	if [[ "${TERMUX_ON_DEVICE_BUILD}" == "false" ]]; then
 		if ! rustup install "${BOOTSTRAP_VERSION}"; then
 			echo "WARN: ${BOOTSTRAP_VERSION} is unavailable, fallback to stable version!"
@@ -238,6 +238,7 @@ termux_step_make_install() {
 	# due to CI and on device build error:
 	# error: could not document `std`
 	"${TERMUX_PKG_SRCDIR}/x.py" install -j "${TERMUX_PKG_MAKE_PROCESSES}" --target wasm32-unknown-unknown --stage 2 std
+	"${TERMUX_PKG_SRCDIR}/x.py" install -j "${TERMUX_PKG_MAKE_PROCESSES}" --target wasm32v1-none --stage 2 std
 	[[ ! -e "${TERMUX_PREFIX}/share/wasi-sysroot" ]] && termux_error_exit "wasi-sysroot not found"
 	"${TERMUX_PKG_SRCDIR}/x.py" install -j "${TERMUX_PKG_MAKE_PROCESSES}" --target wasm32-wasip1 --stage 2 std
 	"${TERMUX_PKG_SRCDIR}/x.py" install -j "${TERMUX_PKG_MAKE_PROCESSES}" --target wasm32-wasip2 --stage 2 std

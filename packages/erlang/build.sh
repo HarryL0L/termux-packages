@@ -2,11 +2,11 @@ TERMUX_PKG_HOMEPAGE=https://www.erlang.org/
 TERMUX_PKG_DESCRIPTION="General-purpose concurrent functional programming language"
 TERMUX_PKG_LICENSE="Apache-2.0"
 TERMUX_PKG_MAINTAINER="@termux"
-TERMUX_PKG_VERSION="28.3.1"
+TERMUX_PKG_VERSION="29.0.2"
 TERMUX_PKG_SRCURL=https://github.com/erlang/otp/archive/refs/tags/OTP-$TERMUX_PKG_VERSION.tar.gz
-TERMUX_PKG_SHA256=0174210eef9db97d41fc277ee272d707f6ee4e07850225e6973216215946aad9
+TERMUX_PKG_SHA256=54e9b51659e604482a1b21ba25d91d500b62b0d0570f0b6d66317e0533087e86
 TERMUX_PKG_AUTO_UPDATE=true
-TERMUX_PKG_UPDATE_VERSION_REGEXP='OTP-\d+(\.\d+)+'
+TERMUX_PKG_UPDATE_VERSION_REGEXP='^OTP-[\d.]+$'
 TERMUX_PKG_DEPENDS="libc++, openssl, ncurses, zlib"
 TERMUX_PKG_NO_STATICSPLIT=true
 TERMUX_PKG_HOSTBUILD=true
@@ -51,13 +51,14 @@ termux_step_post_get_source() {
 
 termux_step_host_build() {
 	cd $TERMUX_PKG_BUILDDIR
+	./otp_build download_ex_doc
 	# Erlang cross compile reference: https://github.com/erlang/otp/blob/master/HOWTO/INSTALL-CROSS.md#building-a-bootstrap-system
 	# Build erlang bootstrap system.
 	# the prefix must be set to $TERMUX_PREFIX here to install the documentation where desired
 	# without making a mess.
 	./configure --prefix="$TERMUX_PREFIX" --without-javac --with-termcap
 	make -j $TERMUX_PKG_MAKE_PROCESSES
-	make RELSYS_MANDIR="$TERMUX_PREFIX/share/man" install-docs
+	make RELSYS_MANDIR="$TERMUX_PREFIX/share/man" install-docs -j $TERMUX_PKG_MAKE_PROCESSES
 }
 
 termux_step_pre_configure() {

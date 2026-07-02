@@ -2,10 +2,10 @@ TERMUX_PKG_HOMEPAGE=https://asciinema.org/
 TERMUX_PKG_DESCRIPTION="Record and share your terminal sessions, the right way"
 TERMUX_PKG_LICENSE="GPL-3.0"
 TERMUX_PKG_MAINTAINER="@termux"
-TERMUX_PKG_VERSION="1:3.1.0"
+TERMUX_PKG_VERSION="1:3.2.1"
 : "${TERMUX_PKG_VERSION:2}" # We need to remove both the epoch and the '~' from the version
 TERMUX_PKG_SRCURL=https://github.com/asciinema/asciinema/archive/refs/tags/v${_//\~/-}.tar.gz
-TERMUX_PKG_SHA256=d07d22d9531fa98d2999dfc2ef27651efc3a4f5e5f46a78c3c306b69c466af8b
+TERMUX_PKG_SHA256=e7e49a09c664a76afc5bc25ca09871eb090bfbe68a2ddbc72750d3cb215d36f1
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_BUILD_IN_SRC=true
 

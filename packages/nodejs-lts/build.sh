@@ -3,10 +3,9 @@ TERMUX_PKG_DESCRIPTION="Open Source, cross-platform JavaScript runtime environme
 TERMUX_PKG_LICENSE="MIT"
 TERMUX_PKG_MAINTAINER="Yaksh Bariya <thunder-coding@termux.dev>"
 # Also update version in termux_setup_nodejs.sh when updating this package
-TERMUX_PKG_VERSION=24.13.0
-TERMUX_PKG_REVISION=1
+TERMUX_PKG_VERSION=24.17.0
 TERMUX_PKG_SRCURL=https://nodejs.org/dist/v${TERMUX_PKG_VERSION}/node-v${TERMUX_PKG_VERSION}.tar.xz
-TERMUX_PKG_SHA256=320fe909cbb347dcf516201e4964ef177b8138df9a7f810d0d54950481b3158b
+TERMUX_PKG_SHA256=a7ab562ed2369a29c68b72fa00e3103bcdfe37063dff799c6acc8e404e275fcd
 # thunder-coding: don't try to autoupdate nodejs, that thing takes 2 whole hours to build for a single arch, and requires a lot of patch updates everytime. Also I run tests everytime I update it to ensure least bugs
 TERMUX_PKG_AUTO_UPDATE=false
 # Note that we do not use a shared libuv to avoid an issue with the Android
@@ -31,13 +30,13 @@ termux_step_host_build() {
 	######
 	# Do host-build of ICU, which is required for nodejs
 	######
-	local ICU_VERSION=78.1
+	local ICU_VERSION=78.3
 	local ICU_TAR=icu4c-${ICU_VERSION}-sources.tgz
 	local ICU_DOWNLOAD=https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION}/$ICU_TAR
 	termux_download \
 		$ICU_DOWNLOAD\
 		$TERMUX_PKG_CACHEDIR/$ICU_TAR \
-		6217f58ca39b23127605cfc6c7e0d3475fe4b0d63157011383d716cb41617886
+		3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0
 	tar xf $TERMUX_PKG_CACHEDIR/$ICU_TAR
 	cd icu/source
 	export CC="$TERMUX_HOST_LLVM_BASE_DIR/bin/clang"

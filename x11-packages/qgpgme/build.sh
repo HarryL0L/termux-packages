@@ -1,0 +1,13 @@
+TERMUX_PKG_HOMEPAGE="https://gnupg.org/software/gpgme/index.html"
+TERMUX_PKG_DESCRIPTION="Qt bindings for GPGME"
+TERMUX_PKG_LICENSE="GPL-2.0-or-later"
+TERMUX_PKG_MAINTAINER="@termux"
+TERMUX_PKG_VERSION="2.1.0"
+TERMUX_PKG_SRCURL="https://github.com/gpg/gpgmeqt/archive/refs/tags/gpgmeqt-${TERMUX_PKG_VERSION}.tar.gz"
+TERMUX_PKG_SHA256=5318396f42fb4cc9021a8ac3db1c01a51652550e6f6d7fe7f181bef3dbe199b0
+TERMUX_PKG_AUTO_UPDATE=true
+TERMUX_PKG_UPDATE_VERSION_REGEXP='^gpgmeqt-([0-9.]+)$'
+TERMUX_PKG_DEPENDS="gpgmepp, libc++, qt6-qtbase"
+TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
+-DBUILD_WITH_QT5=OFF
+"

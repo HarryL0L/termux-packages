@@ -2,9 +2,9 @@ TERMUX_PKG_HOMEPAGE=https://rclone.org/
 TERMUX_PKG_DESCRIPTION="rsync for cloud storage"
 TERMUX_PKG_LICENSE="MIT"
 TERMUX_PKG_MAINTAINER="@termux"
-TERMUX_PKG_VERSION="1.73.0"
+TERMUX_PKG_VERSION="1.74.3"
 TERMUX_PKG_SRCURL=https://github.com/rclone/rclone/releases/download/v${TERMUX_PKG_VERSION}/rclone-v${TERMUX_PKG_VERSION}.tar.gz
-TERMUX_PKG_SHA256=ce1d062234c4ec3f22cdfd17e24bd13be3942ed877da700caa00ed158f542c1f
+TERMUX_PKG_SHA256=c51062f24bb8e6d05c252c9c9fb527adc831715e0dd936ca0c9fb8d07e49d66a
 TERMUX_PKG_AUTO_UPDATE=true
 
 termux_step_make_install() {
