@@ -1,0 +1,17 @@
+--- a/src/core/gpumanager.cpp
++++ b/src/core/gpumanager.cpp
+@@ -51,12 +51,9 @@
+     : m_udmabuf(::open("/dev/udmabuf", O_RDWR | O_CLOEXEC))
+     , m_udmabufDevId(getDevId(m_udmabuf))
+     , m_udev(std::make_unique<Udev>())
+-    , m_udevMonitor(m_udev->createMonitor())
+-    , m_udevNotifier(std::make_unique<QSocketNotifier>(m_udevMonitor->fd(), QSocketNotifier::Read))
++    , m_udevMonitor(nullptr)
++    , m_udevNotifier(nullptr)
+ {
+-    m_udevMonitor->filterSubsystemDevType("drm");
+-    connect(m_udevNotifier.get(), &QSocketNotifier::activated, this, &GpuManager::handleUdevEvent);
+-    m_udevMonitor->enable();
+     scanForRenderDevices();
+ }
+
