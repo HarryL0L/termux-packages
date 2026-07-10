@@ -1,11 +1,10 @@
-TERMUX_PKG_HOMEPAGE=https://codeberg.org/ravachol/kew
+TERMUX_PKG_HOMEPAGE=https://kewplayer.com
 TERMUX_PKG_DESCRIPTION="Music for the Shell"
 TERMUX_PKG_LICENSE="GPL-2.0-only"
 TERMUX_PKG_MAINTAINER="@termux"
-TERMUX_PKG_VERSION="4.0.0"
-TERMUX_PKG_REVISION=1
+TERMUX_PKG_VERSION="4.1.8"
 TERMUX_PKG_SRCURL="https://codeberg.org/ravachol/kew/archive/v$TERMUX_PKG_VERSION.tar.gz"
-TERMUX_PKG_SHA256=746236a57c96f9e74e88557f1d9d9e62cad53a2e140596bb9acb051cf59118b5
+TERMUX_PKG_SHA256=418507821b1d2c9a36e9c2871b873be4431cbabcd90a623031cc65c7535e55d9
 TERMUX_PKG_AUTO_UPDATE=true
 TERMUX_PKG_BUILD_IN_SRC=true
 TERMUX_PKG_DEPENDS="chafa, faad2, fftw, glib, libogg, libvorbis, libopus, opusfile, taglib"
