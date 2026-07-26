@@ -15,4 +15,3 @@
      } else {
          GGML_LOG_WARN("ggml_opencl: unsupported GPU '%s'.\n", dev_ctx->device_name.c_str());
          dev_ctx->gpu_family = GPU_FAMILY::UNKNOWN;
-         
