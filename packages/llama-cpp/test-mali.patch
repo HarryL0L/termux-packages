@@ -1,0 +1,18 @@
+--- a/ggml/src/ggml-opencl/ggml-opencl.cpp
++++ b/ggml/src/ggml-opencl/ggml-opencl.cpp
+@@ -5748,6 +5748,14 @@
+         }
+     } else if (strstr(dev_ctx->device_name.c_str(), "Intel")) {
+         dev_ctx->gpu_family = GPU_FAMILY::INTEL;
++    } else if (strstr(dev_ctx->device_name.c_str(), "Mali")) {
++        // ARM Mali GPUs are not officially supported by this backend.
++        // Route through the generic (non-Adreno) code path used for Intel,
++        // which uses portable OpenCL without Adreno-specific extensions.
++        // This is unverified/experimental for Mali hardware.
++        GGML_LOG_WARN("ggml_opencl: device '%s' is a Mali GPU and is not officially supported; "
++            "using generic code path, correctness/perf not guaranteed.\n", dev_ctx->device_name.c_str());
++        dev_ctx->gpu_family = GPU_FAMILY::INTEL;
+     } else {
+         GGML_LOG_WARN("ggml_opencl: unsupported GPU '%s'.\n", dev_ctx->device_name.c_str());
+         dev_ctx->gpu_family = GPU_FAMILY::UNKNOWN;
+         
