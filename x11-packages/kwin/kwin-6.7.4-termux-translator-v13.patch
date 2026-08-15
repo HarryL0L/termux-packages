@@ -1,0 +1,1143 @@
+diff --git a/src/backends/CMakeLists.txt b/src/backends/CMakeLists.txt
+index e94a1c6..fa72a51 100644
+--- a/src/backends/CMakeLists.txt
++++ b/src/backends/CMakeLists.txt
+@@ -2,6 +2,7 @@ add_subdirectory(drm)
+ add_subdirectory(fakeinput)
+ add_subdirectory(libinput)
+ add_subdirectory(virtual)
++add_subdirectory(translator)
+ add_subdirectory(wayland)
+ if (X11_XCB_FOUND)
+     add_subdirectory(x11)
+diff --git a/src/backends/translator/CMakeLists.txt b/src/backends/translator/CMakeLists.txt
+new file mode 100644
+index 0000000..80dfc26
+--- /dev/null
++++ b/src/backends/translator/CMakeLists.txt
+@@ -0,0 +1,10 @@
++target_sources(kwin PRIVATE
++    termuxgui_connection.cpp
++    translator_backend.cpp
+++    translator_output.cpp
++    translator_qpainter_backend.cpp
++)
++
++if (ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_CXX_COMPILER_TARGET MATCHES "android")
++    target_link_libraries(kwin PRIVATE android)
++endif()
+diff --git a/src/backends/translator/termuxgui_connection.cpp b/src/backends/translator/termuxgui_connection.cpp
+new file mode 100644
+index 0000000..c7c2919
+--- /dev/null
++++ b/src/backends/translator/termuxgui_connection.cpp
+@@ -0,0 +1,566 @@
++/*
++    Minimal Termux:GUI protobuf v0 client used by the KWin translator backend.
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#include "termuxgui_connection.h"
+++
++#include <thread>
++
++#include <QCoreApplication>
++#include <QProcess>
++
++#include <array>
++#include <cerrno>
++#include <cstring>
++#include <cstddef>
++#include <random>
++#include <string>
++
++#include <arpa/inet.h>
++#include <sys/socket.h>
++#include <sys/types.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#if defined(__ANDROID__)
++#include <android/hardware_buffer.h>
++#include <dlfcn.h>
++#endif
++
++namespace KWin
++{
++
++#if defined(__ANDROID__)
++struct TermuxGuiConnection::HardwareBufferApi
++{
++    using RecvHandleFn = int (*)(int, AHardwareBuffer **);
++    using DescribeFn = void (*)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
++    using LockFn = int (*)(AHardwareBuffer *, uint64_t, int32_t, const ARect *, void **);
++    using UnlockFn = int (*)(AHardwareBuffer *, int32_t *);
++    using ReleaseFn = void (*)(AHardwareBuffer *);
++
++    void *library = nullptr;
++    RecvHandleFn recvHandle = nullptr;
++    DescribeFn describe = nullptr;
++    LockFn lock = nullptr;
++    UnlockFn unlock = nullptr;
++    ReleaseFn release = nullptr;
++
++    bool load()
++    {
++        library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
++        if (!library) {
++            return false;
++        }
++
++        recvHandle = reinterpret_cast<RecvHandleFn>(dlsym(library, "AHardwareBuffer_recvHandleFromUnixSocket"));
++        describe = reinterpret_cast<DescribeFn>(dlsym(library, "AHardwareBuffer_describe"));
++        lock = reinterpret_cast<LockFn>(dlsym(library, "AHardwareBuffer_lock"));
++        unlock = reinterpret_cast<UnlockFn>(dlsym(library, "AHardwareBuffer_unlock"));
++        release = reinterpret_cast<ReleaseFn>(dlsym(library, "AHardwareBuffer_release"));
++
++        if (!recvHandle || !describe || !lock || !unlock || !release) {
++            dlclose(library);
++            library = nullptr;
++            recvHandle = nullptr;
++            describe = nullptr;
++            lock = nullptr;
++            unlock = nullptr;
++            release = nullptr;
++            return false;
++        }
++        return true;
++    }
++
++    ~HardwareBufferApi()
++    {
++        if (library) {
++            dlclose(library);
++        }
++    }
++};
++#else
++struct TermuxGuiConnection::HardwareBufferApi
++{
++};
++#endif
++
++namespace {
++
++static void appendVarint(std::string &out, uint64_t value)
++{
++    while (value >= 0x80) {
++        out.push_back(char((value & 0x7f) | 0x80));
++        value >>= 7;
++    }
++    out.push_back(char(value));
++}
++
++static void appendKey(std::string &out, uint32_t field, uint32_t wireType)
++{
++    appendVarint(out, (uint64_t(field) << 3) | wireType);
++}
++
++static void appendInt32(std::string &out, uint32_t field, int32_t value)
++{
++    appendKey(out, field, 0);
++    appendVarint(out, uint64_t(int64_t(value)));
++}
++
++
++static void appendMessage(std::string &out, uint32_t field, const std::string &message)
++{
++    appendKey(out, field, 2);
++    appendVarint(out, message.size());
++    out.append(message);
++}
++
++static std::string makeCreateMessage(int32_t aid, int32_t parent)
++{
++    std::string out;
++    appendInt32(out, 1, aid);
++    appendInt32(out, 2, parent);
++    return out;
++}
++
++} // namespace
++
++TermuxGuiConnection::TermuxGuiConnection() = default;
++
++TermuxGuiConnection::~TermuxGuiConnection()
++{
++    if (m_buffer) {
++#if defined(__ANDROID__)
++        if (m_hardwareBufferApi && m_hardwareBufferApi->release) {
++            m_hardwareBufferApi->release(m_buffer);
++        }
++#endif
++        m_buffer = nullptr;
++    }
++    if (m_event >= 0) {
++        shutdown(m_event, SHUT_RDWR);
++    }
++    if (m_eventThread) {
++        auto *thread = static_cast<std::thread *>(m_eventThread);
++        thread->join();
++        delete thread;
++        m_eventThread = nullptr;
++    }
++    closeSockets();
++}
++
++bool TermuxGuiConnection::isValid() const
++{
++    return m_valid;
++}
++
++void TermuxGuiConnection::closeSockets()
++{
++    if (m_main >= 0) {
++        close(m_main);
++        m_main = -1;
++    }
++    if (m_event >= 0) {
++        close(m_event);
++        m_event = -1;
++    }
++    if (m_mainListen >= 0) {
++        close(m_mainListen);
++        m_mainListen = -1;
++    }
++    if (m_eventListen >= 0) {
++        close(m_eventListen);
++        m_eventListen = -1;
++    }
++}
++
++bool TermuxGuiConnection::createSockets()
++{
++    std::random_device rd;
++    const uint32_t tag = rd();
++    const QByteArray base = QByteArray("kwin-translator-") + QByteArray::number(QCoreApplication::applicationPid()) + '-' + QByteArray::number(tag);
++    m_mainName = QString::fromLatin1(base + "-main");
++    m_eventName = QString::fromLatin1(base + "-event");
++
++    auto make = [](const QByteArray &name) -> int {
++        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
++        if (fd < 0) {
++            return -1;
++        }
++        sockaddr_un addr{};
++        addr.sun_family = AF_UNIX;
++        if (name.size() + 1 >= sizeof(addr.sun_path)) {
++            close(fd);
++            return -1;
++        }
++        addr.sun_path[0] = '\0';
++        memcpy(addr.sun_path + 1, name.constData(), name.size());
++        const socklen_t len = offsetof(sockaddr_un, sun_path) + 1 + name.size();
++        if (bind(fd, reinterpret_cast<sockaddr *>(&addr), len) < 0 || listen(fd, 1) < 0) {
++            close(fd);
++            return -1;
++        }
++        return fd;
++    };
++
++    m_mainListen = make(m_mainName.toLatin1());
++    m_eventListen = make(m_eventName.toLatin1());
++    if (m_mainListen < 0 || m_eventListen < 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Failed to create Termux:GUI sockets:" << strerror(errno);
++        closeSockets();
++        return false;
++    }
++    return true;
++}
++
++bool TermuxGuiConnection::broadcastConnection()
++{
++    QStringList args{
++        QStringLiteral("broadcast"),
++        QStringLiteral("--user"), QStringLiteral("0"),
++        QStringLiteral("-n"), QStringLiteral("com.termux.gui/.GUIReceiver"),
++        QStringLiteral("--es"), QStringLiteral("mainSocket"), m_mainName,
++        QStringLiteral("--es"), QStringLiteral("eventSocket"), m_eventName,
++    };
++    QProcess process;
++    process.start(QStringLiteral("/system/bin/am"), args);
++    if (!process.waitForStarted(3000)) {
++        qCWarning(KWIN_TRANSLATOR) << "Could not start Android am:" << process.errorString();
++        return false;
++    }
++    if (!process.waitForFinished(5000) || process.exitCode() != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI broadcast failed:" << process.readAllStandardError();
++        return false;
++    }
++    return true;
++}
++
++void TermuxGuiConnection::drainEvents()
++{
++    std::array<char, 4096> buffer{};
++    while (true) {
++        const ssize_t n = recv(m_event, buffer.data(), buffer.size(), 0);
++        if (n <= 0) {
++            break;
++        }
++    }
++}
++
++bool TermuxGuiConnection::connectPlugin()
++{
++    if (!broadcastConnection()) {
++        return false;
++    }
++
++    m_main = accept4(m_mainListen, nullptr, nullptr, SOCK_CLOEXEC);
++    m_event = accept4(m_eventListen, nullptr, nullptr, SOCK_CLOEXEC);
++    if (m_main < 0 || m_event < 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI did not connect:" << strerror(errno);
++        return false;
++    }
++
++    const uint8_t protocol = 0; // protobuf v0
++    if (!writeExact(&protocol, sizeof(protocol))) {
++        return false;
++    }
++    uint8_t status = 1;
++    if (!readExact(&status, sizeof(status)) || status != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI rejected protobuf v0";
++        return false;
++    }
++    m_eventThread = new std::thread([this] { drainEvents(); });
++    return true;
++}
++
++bool TermuxGuiConnection::writeExact(const void *data, size_t size)
++{
++    const char *p = static_cast<const char *>(data);
++    while (size) {
++        const ssize_t n = send(m_main, p, size, MSG_NOSIGNAL);
++        if (n < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            return false;
++        }
++        if (n == 0) {
++            return false;
++        }
++        p += n;
++        size -= n;
++    }
++    return true;
++}
++
++bool TermuxGuiConnection::readExact(void *data, size_t size)
++{
++    char *p = static_cast<char *>(data);
++    while (size) {
++        const ssize_t n = recv(m_main, p, size, 0);
++        if (n < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            return false;
++        }
++        if (n == 0) {
++            return false;
++        }
++        p += n;
++        size -= n;
++    }
++    return true;
++}
++
++bool TermuxGuiConnection::sendMethod(uint32_t field, const std::string &payload)
++{
++    std::string method;
++    appendMessage(method, field, payload);
++
++    std::string framed;
++    appendVarint(framed, method.size());
++    framed.append(method);
++    return writeExact(framed.data(), framed.size());
++}
++
++bool TermuxGuiConnection::readDelimited(std::string &payload)
++{
++    payload.clear();
++    uint64_t length = 0;
++    int shift = 0;
++    while (shift <= 63) {
++        uint8_t byte;
++        if (!readExact(&byte, 1)) {
++            return false;
++        }
++        length |= uint64_t(byte & 0x7f) << shift;
++        if (!(byte & 0x80)) {
++            if (length > 16 * 1024 * 1024) {
++                return false;
++            }
++            payload.resize(size_t(length));
++            return length == 0 || readExact(payload.data(), size_t(length));
++        }
++        shift += 7;
++    }
++    return false;
++}
++
++bool TermuxGuiConnection::readVarint(const std::string &data, size_t &offset, uint64_t &value) const
++{
++    value = 0;
++    int shift = 0;
++    while (offset < data.size() && shift <= 63) {
++        const uint8_t byte = uint8_t(data[offset++]);
++        value |= uint64_t(byte & 0x7f) << shift;
++        if (!(byte & 0x80)) {
++            return true;
++        }
++        shift += 7;
++    }
++    return false;
++}
++
++bool TermuxGuiConnection::skipField(const std::string &data, size_t &offset, uint32_t wireType) const
++{
++    uint64_t value;
++    switch (wireType) {
++    case 0:
++        return readVarint(data, offset, value);
++    case 1:
++        if (offset + 8 > data.size()) return false;
++        offset += 8;
++        return true;
++    case 2:
++        if (!readVarint(data, offset, value) || value > data.size() - offset) return false;
++        offset += size_t(value);
++        return true;
++    case 5:
++        if (offset + 4 > data.size()) return false;
++        offset += 4;
++        return true;
++    default:
++        return false;
++    }
++}
++
++bool TermuxGuiConnection::parseInt32Field(const std::string &data, uint32_t wanted, int32_t &value) const
++{
++    size_t offset = 0;
++    while (offset < data.size()) {
++        uint64_t key;
++        if (!readVarint(data, offset, key)) return false;
++        const uint32_t field = uint32_t(key >> 3);
++        const uint32_t wire = uint32_t(key & 7);
++        if (field == wanted && wire == 0) {
++            uint64_t v;
++            if (!readVarint(data, offset, v)) return false;
++            value = int32_t(uint32_t(v));
++            return true;
++        }
++        if (!skipField(data, offset, wire)) return false;
++    }
++    return false;
++}
++
++bool TermuxGuiConnection::createActivity()
++{
++    std::string req;
++    appendInt32(req, 1, -1); // new task
++    appendInt32(req, 2, 0); // normal activity type
++    if (!sendMethod(16, req)) return false;
++    std::string response;
++    if (!readDelimited(response)) return false;
++    int32_t aid = -1;
++    if (!parseInt32Field(response, 1, aid) || aid < 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI failed to create Activity";
++        return false;
++    }
++    m_activity = aid;
++    return true;
++}
++
++bool TermuxGuiConnection::createSurfaceView()
++{
++    std::string create = makeCreateMessage(m_activity, -1);
++    std::string req;
++    appendMessage(req, 1, create);
++    if (!sendMethod(130, req)) return false;
++    std::string response;
++    if (!readDelimited(response)) return false;
++    int32_t id = -1;
++    if (!parseInt32Field(response, 1, id) || id < 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI failed to create SurfaceView";
++        return false;
++    }
++    m_view = id;
++    return true;
++}
++
++bool TermuxGuiConnection::receiveHardwareBuffer(int32_t id)
++{
++#if defined(__ANDROID__)
++    if (!m_hardwareBufferApi || !m_hardwareBufferApi->recvHandle || m_hardwareBufferApi->recvHandle(m_main, &m_buffer) != 0 || !m_buffer) {
++        qCWarning(KWIN_TRANSLATOR) << "Could not receive Android HardwareBuffer";
++        return false;
++    }
++    AHardwareBuffer_Desc desc{};
++    m_hardwareBufferApi->describe(m_buffer, &desc);
++    if (desc.width != uint32_t(m_size.width()) || desc.height != uint32_t(m_size.height()) || desc.format != 1) {
++        qCWarning(KWIN_TRANSLATOR) << "Received unexpected HardwareBuffer dimensions";
++        if (m_hardwareBufferApi && m_hardwareBufferApi->release) {
++            m_hardwareBufferApi->release(m_buffer);
++        }
++        m_buffer = nullptr;
++        return false;
++    }
++    m_stride = desc.stride;
++    m_bufferId = id;
++    return true;
++#else
++    Q_UNUSED(id)
++    return false;
++#endif
++}
++
++bool TermuxGuiConnection::createHardwareBuffer(const QSize &size)
++{
++    std::string req;
++    appendInt32(req, 1, size.width());
++    appendInt32(req, 2, size.height());
++    appendInt32(req, 3, 0); // RGBA8888
++    appendInt32(req, 5, 2); // CPU write often
++    if (!sendMethod(700, req)) return false;
++
++    int32_t id;
++    uint32_t wireId = 0;
++    if (!readExact(&wireId, sizeof(wireId))) {
++        return false;
++    }
++    id = int32_t(ntohl(wireId));
++    if (id < 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Termux:GUI failed to create HardwareBuffer";
++        return false;
++    }
++    return receiveHardwareBuffer(id);
++}
++
++bool TermuxGuiConnection::setSurfaceBuffer()
++{
++    std::string view;
++    appendInt32(view, 1, m_activity);
++    appendInt32(view, 2, m_view);
++
++    std::string req;
++    appendMessage(req, 1, view);
++    appendInt32(req, 2, m_bufferId);
++    if (!sendMethod(702, req)) return false;
++    std::string response;
++    return readDelimited(response);
++}
++
++bool TermuxGuiConnection::initialize(const QSize &size)
++{
++#if !defined(__ANDROID__)
++    Q_UNUSED(size)
++    qCWarning(KWIN_TRANSLATOR) << "The translator backend requires an Android build";
++    return false;
++#else
++    m_size = size;
++    m_hardwareBufferApi = std::make_unique<HardwareBufferApi>();
++    if (!m_hardwareBufferApi->load()) {
++        qCWarning(KWIN_TRANSLATOR) << "Required AHardwareBuffer APIs are unavailable";
++        return false;
++    }
++    if (!createSockets() || !connectPlugin() || !createActivity() || !createSurfaceView() || !createHardwareBuffer(size) || !setSurfaceBuffer()) {
++        return false;
++    }
++
++    m_image = QImage(m_size, QImage::Format_RGBA8888);
++    m_valid = true;
++    return true;
++#endif
++}
++
++bool TermuxGuiConnection::beginFrame()
++{
++#if defined(__ANDROID__)
++    if (!m_valid || m_locked || !m_buffer) return false;
++    void *data = nullptr;
++    if (!m_hardwareBufferApi || !m_hardwareBufferApi->lock || m_hardwareBufferApi->lock(m_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &data) != 0 || !data) {
++        qCWarning(KWIN_TRANSLATOR) << "AHardwareBuffer_lock failed";
++        return false;
++    }
++    m_image = QImage(static_cast<uchar *>(data), m_size.width(), m_size.height(), int(m_stride * 4), QImage::Format_RGBA8888);
++    m_locked = true;
++    return true;
++#else
++    return false;
++#endif
++}
++
++void TermuxGuiConnection::endFrame()
++{
++#if defined(__ANDROID__)
++    if (!m_locked || !m_buffer) return;
++    const int result = m_hardwareBufferApi->unlock(m_buffer, nullptr);
++    if (result != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "AHardwareBuffer_unlock failed:" << result;
++    }
++    m_locked = false;
++#endif
++}
++
++bool TermuxGuiConnection::present()
++{
++    if (!m_valid) return false;
++    return setSurfaceBuffer();
++}
++
++QImage *TermuxGuiConnection::image()
++{
++    return &m_image;
++}
++
++} // namespace KWin
+diff --git a/src/backends/translator/termuxgui_connection.h b/src/backends/translator/termuxgui_connection.h
+new file mode 100644
+index 0000000..942b480
+--- /dev/null
++++ b/src/backends/translator/termuxgui_connection.h
+@@ -0,0 +1,74 @@
++/*
++    Minimal client for the Termux:GUI protobuf v0 protocol.
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#pragma once
++
++#include <QImage>
++#include <QSize>
++#include <QString>
++
++#include <cstdint>
++#include <memory>
++#include <string>
++
++struct AHardwareBuffer;
++
++namespace KWin
++{
++
++class TermuxGuiConnection
++{
++public:
++    TermuxGuiConnection();
++    ~TermuxGuiConnection();
++
++    bool initialize(const QSize &size);
++    bool beginFrame();
++    void endFrame();
++    bool present();
++
++    QImage *image();
++    bool isValid() const;
++
++private:
++    bool createSockets();
++    bool connectPlugin();
++    bool createActivity();
++    bool createSurfaceView();
++    bool createHardwareBuffer(const QSize &size);
++    bool setSurfaceBuffer();
++    bool sendMethod(uint32_t field, const std::string &payload);
++    bool readDelimited(std::string &payload);
++    bool readExact(void *data, size_t size);
++    bool writeExact(const void *data, size_t size);
++    bool readVarint(const std::string &data, size_t &offset, uint64_t &value) const;
++    bool skipField(const std::string &data, size_t &offset, uint32_t wireType) const;
++    bool parseInt32Field(const std::string &data, uint32_t wanted, int32_t &value) const;
++    bool receiveHardwareBuffer(int32_t id);
++    bool broadcastConnection();
++    void closeSockets();
++    void drainEvents();
++
++    int m_mainListen = -1;
++    int m_eventListen = -1;
++    int m_main = -1;
++    int m_event = -1;
++    int32_t m_activity = -1;
++    int32_t m_view = -1;
++    int32_t m_bufferId = -1;
++    AHardwareBuffer *m_buffer = nullptr;
++    QImage m_image;
++    uint32_t m_stride = 0;
++    QSize m_size;
++    bool m_locked = false;
++    bool m_valid = false;
++    struct HardwareBufferApi;
++    std::unique_ptr<HardwareBufferApi> m_hardwareBufferApi;
++    void *m_eventThread = nullptr;
++    QString m_mainName;
++    QString m_eventName;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_backend.cpp b/src/backends/translator/translator_backend.cpp
+new file mode 100644
+index 0000000..7f1a455
+--- /dev/null
++++ b/src/backends/translator/translator_backend.cpp
+@@ -0,0 +1,63 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "translator_backend.h"
++
++#include "termuxgui_connection.h"
+++#include "translator_output.h"
++#include "translator_qpainter_backend.h"
++
++namespace KWin
++{
++
++TranslatorBackend::TranslatorBackend(const QSize &size, qreal scale, QObject *parent)
++    : OutputBackend(parent)
++    , m_connection(std::make_unique<TermuxGuiConnection>())
++    , m_size(size)
++    , m_scale(scale)
++{
++}
++
++TranslatorBackend::~TranslatorBackend()
++{
++    if (m_output) {
++        m_output->unref();
++    }
++}
++
++bool TranslatorBackend::initialize()
++{
++    if (!m_connection->initialize(m_size)) {
++        qWarning() << "Could not initialize Termux:GUI connection";
++        return false;
++    }
++    m_output = new TranslatorOutput(this);
++    m_output->ref();
++    m_output->init(m_size, m_scale);
++    return true;
++}
++
++std::unique_ptr<QPainterBackend> TranslatorBackend::createQPainterBackend()
++{
++    return std::make_unique<TranslatorQPainterBackend>(this);
++}
++
++QList<BackendOutput *> TranslatorBackend::outputs() const
++{
++    return m_output ? QList<BackendOutput *>{m_output} : QList<BackendOutput *>{};
++}
++
++QList<CompositingType> TranslatorBackend::supportedCompositors() const
++{
++    return {QPainterCompositing};
++}
++
++TermuxGuiConnection *TranslatorBackend::connection() const
++{
++    return m_connection.get();
++}
++
++EglDisplay *TranslatorBackend::sceneEglDisplayObject() const
++{
++    return nullptr;
++}
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_backend.h b/src/backends/translator/translator_backend.h
+new file mode 100644
+index 0000000..3b39933
+--- /dev/null
++++ b/src/backends/translator/translator_backend.h
+@@ -0,0 +1,44 @@
++/*
++    KWin - the KDE window manager
++    This file is part of the KDE project.
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#pragma once
++
++#include "kwin_export.h"
++#include "core/outputbackend.h"
++
++#include <QSize>
++#include <memory>
++
++namespace KWin
++{
++
++class TranslatorOutput;
++class TranslatorQPainterBackend;
++class TermuxGuiConnection;
++
++class KWIN_EXPORT TranslatorBackend : public OutputBackend
++{
++
++public:
++    TranslatorBackend(const QSize &size, qreal scale, QObject *parent = nullptr);
++    ~TranslatorBackend() override;
++
++    bool initialize() override;
++    std::unique_ptr<QPainterBackend> createQPainterBackend() override;
++    EglDisplay *sceneEglDisplayObject() const override;
++    QList<BackendOutput *> outputs() const override;
++    QList<CompositingType> supportedCompositors() const override;
++
++    TermuxGuiConnection *connection() const;
++
++private:
++    TranslatorOutput *m_output = nullptr;
++    std::unique_ptr<TermuxGuiConnection> m_connection;
++    QSize m_size;
++    qreal m_scale;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_output.cpp b/src/backends/translator/translator_output.cpp
+new file mode 100644
+index 0000000..c05aaa7
+--- /dev/null
++++ b/src/backends/translator/translator_output.cpp
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "translator_output.h"
++#include "translator_backend.h"
++#include "termuxgui_connection.h"
++
++#include "core/outputconfiguration.h"
++#include "core/outputlayer.h"
++#include "core/renderbackend.h"
++#include "core/renderloop.h"
++#include "utils/softwarevsyncmonitor.h"
++
++#include <QDebug>
++
++namespace KWin
++{
++
++TranslatorOutput::TranslatorOutput(TranslatorBackend *backend)
++    : BackendOutput()
++    , m_backend(backend)
++    , m_renderLoop(std::make_unique<RenderLoop>(this))
++    , m_vsyncMonitor(SoftwareVsyncMonitor::create())
++{
++    connect(m_vsyncMonitor.get(), &VsyncMonitor::vblankOccurred, this, &TranslatorOutput::vblank);
++    setInformation(Information{
++        .name = QStringLiteral("Termux-Display"),
++        .physicalSize = QSize(0, 0),
++        .capabilities = Capability::CustomModes,
++        .internal = true,
++    });
++}
++
++TranslatorOutput::~TranslatorOutput() = default;
++
++RenderLoop *TranslatorOutput::renderLoop() const
++{
++    return m_renderLoop.get();
++}
++
++bool TranslatorOutput::testPresentation(const std::shared_ptr<OutputFrame> &)
++{
++    return true;
++}
++
++bool TranslatorOutput::present(const QList<OutputLayer *> &, const std::shared_ptr<OutputFrame> &frame)
++{
++    if (!m_backend->connection()->present()) {
++        qWarning() << "Failed to present frame to Termux:GUI";
++        return false;
++    }
++    m_frame = frame;
++    m_vsyncMonitor->arm();
++    return true;
++}
++
++void TranslatorOutput::init(const QSize &pixelSize, qreal scale)
++{
++    const auto mode = std::make_shared<OutputMode>(OutputModeline(pixelSize, 60000, OutputModeline::Flag::Preferred));
++    m_renderLoop->setRefreshRate(mode->refreshRate());
++    m_vsyncMonitor->setRefreshRate(mode->refreshRate());
++    setState(State{
++        .scale = scale,
++        .modes = {mode},
++        .currentMode = mode,
++        .scaleSetting = scale,
++    });
++}
++
++void TranslatorOutput::vblank(std::chrono::nanoseconds timestamp)
++{
++    if (m_frame) {
++        m_frame->presented(timestamp, PresentationMode::VSync);
++        m_frame.reset();
++    }
++}
++
++void TranslatorOutput::setOutputLayer(std::unique_ptr<OutputLayer> &&layer)
++{
++    m_layer = std::move(layer);
++}
++
++OutputLayer *TranslatorOutput::outputLayer() const
++{
++    return m_layer.get();
++}
++
++} // namespace KWin
++
+diff --git a/src/backends/translator/translator_output.h b/src/backends/translator/translator_output.h
+new file mode 100644
+index 0000000..ad1d0ac
+--- /dev/null
++++ b/src/backends/translator/translator_output.h
+@@ -0,0 +1,49 @@
++/*
++    KWin - the KDE window manager
++    This file is part of the KDE project.
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#pragma once
++
++#include "core/backendoutput.h"
++
++#include <memory>
++
++namespace KWin
++{
++
++class OutputConfiguration;
++
++class TranslatorBackend;
++class TranslatorQPainterLayer;
++class RenderLoop;
++class SoftwareVsyncMonitor;
++class OutputFrame;
++
++class TranslatorOutput : public BackendOutput
++{
++
++public:
++    explicit TranslatorOutput(TranslatorBackend *backend);
++    ~TranslatorOutput() override;
++
++    RenderLoop *renderLoop() const override;
++    bool testPresentation(const std::shared_ptr<OutputFrame> &frame) override;
+++    bool present(const QList<OutputLayer *> &layersToUpdate, const std::shared_ptr<OutputFrame> &frame) override;
++
++    void init(const QSize &pixelSize, qreal scale);
++    void setOutputLayer(std::unique_ptr<OutputLayer> &&layer);
++    OutputLayer *outputLayer() const;
++
++private:
++    void vblank(std::chrono::nanoseconds timestamp);
++
++    TranslatorBackend *m_backend;
++    std::unique_ptr<RenderLoop> m_renderLoop;
++    std::unique_ptr<SoftwareVsyncMonitor> m_vsyncMonitor;
++    std::unique_ptr<OutputLayer> m_layer;
++    std::shared_ptr<OutputFrame> m_frame;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_qpainter_backend.cpp b/src/backends/translator/translator_qpainter_backend.cpp
+new file mode 100644
+index 0000000..5898dc5
+--- /dev/null
++++ b/src/backends/translator/translator_qpainter_backend.cpp
+@@ -0,0 +1,81 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "translator_qpainter_backend.h"
++
++#include "core/rendertarget.h"
++#include "translator_backend.h"
+++#include "translator_output.h"
++#include "termuxgui_connection.h"
++
++namespace KWin
++{
++
++TranslatorQPainterLayer::TranslatorQPainterLayer(BackendOutput *output, TranslatorQPainterBackend *backend)
++    : OutputLayer(output, OutputLayerType::Primary)
++    , m_backend(backend)
++{
++}
++
++TranslatorQPainterLayer::~TranslatorQPainterLayer() = default;
++
++std::optional<OutputLayerBeginFrameInfo> TranslatorQPainterLayer::doBeginFrame()
++{
++    auto connection = m_backend->backend()->connection();
++    if (!connection->beginFrame()) {
++        return std::nullopt;
++    }
++    return OutputLayerBeginFrameInfo{
++        .renderTarget = RenderTarget(connection->image()),
++        .repaint = Region::infinite(),
++    };
++}
++
++bool TranslatorQPainterLayer::doEndFrame(const Region &, const Region &, OutputFrame *)
++{
++    m_backend->backend()->connection()->endFrame();
++    return true;
++}
++
++DrmDevice *TranslatorQPainterLayer::scanoutDevice() const
++{
++    return nullptr;
++}
++
++FormatModifierMap TranslatorQPainterLayer::supportedDrmFormats() const
++{
++    return {};
++}
++
++void TranslatorQPainterLayer::releaseBuffers()
++{
++    m_backend->backend()->connection()->endFrame();
++}
++
++TranslatorQPainterBackend::TranslatorQPainterBackend(TranslatorBackend *backend)
++    : m_backend(backend)
++{
++    const auto outputs = backend->outputs();
++    for (BackendOutput *output : outputs) {
++        static_cast<TranslatorOutput *>(output)->setOutputLayer(std::make_unique<TranslatorQPainterLayer>(output, this));
++    }
++}
++
++TranslatorQPainterBackend::~TranslatorQPainterBackend()
++{
++    const auto outputs = m_backend->outputs();
++    for (BackendOutput *output : outputs) {
++        static_cast<TranslatorOutput *>(output)->setOutputLayer(nullptr);
++    }
++}
++
++TranslatorBackend *TranslatorQPainterBackend::backend() const
++{
++    return m_backend;
++}
++
++QList<OutputLayer *> TranslatorQPainterBackend::compatibleOutputLayers(BackendOutput *output)
++{
++    return {static_cast<TranslatorOutput *>(output)->outputLayer()};
++}
++
++} // namespace KWin
++
+diff --git a/src/backends/translator/translator_qpainter_backend.h b/src/backends/translator/translator_qpainter_backend.h
+new file mode 100644
+index 0000000..4203388
+--- /dev/null
++++ b/src/backends/translator/translator_qpainter_backend.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#pragma once
++
++#include "core/outputlayer.h"
++#include "core/renderbackend.h"
++#include "qpainter/qpainterbackend.h"
++
++#include <memory>
++
++namespace KWin
++{
++
++class TranslatorBackend;
++class TranslatorQPainterBackend;
++
++class TranslatorQPainterLayer : public OutputLayer
++{
++public:
++    TranslatorQPainterLayer(BackendOutput *output, TranslatorQPainterBackend *backend);
++    ~TranslatorQPainterLayer() override;
++
++    std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
++    bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
++    DrmDevice *scanoutDevice() const override;
++    FormatModifierMap supportedDrmFormats() const override;
++    void releaseBuffers() override;
++
++private:
++    TranslatorQPainterBackend *m_backend;
++};
++
++class TranslatorQPainterBackend : public QPainterBackend
++{
++public:
++    explicit TranslatorQPainterBackend(TranslatorBackend *backend);
++    ~TranslatorQPainterBackend() override;
++
++    TranslatorBackend *backend() const;
++    QList<OutputLayer *> compatibleOutputLayers(BackendOutput *output) override;
++
++private:
++    TranslatorBackend *m_backend;
++};
++
++} // namespace KWin
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 70432da..4a3349b 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -11,6 +11,7 @@
+ #include "config-kwin.h"
+ 
+ #include "backends/drm/drm_backend.h"
++#include "backends/translator/translator_backend.h"
+ #include "backends/virtual/virtual_backend.h"
+ #include "backends/wayland/wayland_backend.h"
+ #include "compositor.h"
+@@ -335,6 +336,7 @@ int main(int argc, char *argv[])
+                                             i18n("The Wayland Display to use in windowed mode on platform Wayland."),
+                                             QStringLiteral("display"));
+     QCommandLineOption virtualFbOption(QStringLiteral("virtual"), i18n("Render to a virtual framebuffer."));
++    QCommandLineOption translatorOption(QStringLiteral("translator"), i18n("Render to the Termux:GUI Android surface."));
+     QCommandLineOption widthOption(QStringLiteral("width"),
+                                    i18n("The width for windowed mode. Default width is 1024."),
+                                    QStringLiteral("width"));
+@@ -396,6 +398,7 @@ int main(int argc, char *argv[])
+ #endif
+     parser.addOption(waylandDisplayOption);
+     parser.addOption(virtualFbOption);
++    parser.addOption(translatorOption);
+     parser.addOption(widthOption);
+     parser.addOption(heightOption);
+     parser.addOption(scaleOption);
+@@ -467,6 +470,7 @@ int main(int argc, char *argv[])
+ #endif
+         Wayland,
+         Virtual,
++        Translator,
+     };
+ 
+     BackendType backendType;
+@@ -485,6 +489,8 @@ int main(int argc, char *argv[])
+         backendType = BackendType::Wayland;
+     } else if (parser.isSet(virtualFbOption)) {
+         backendType = BackendType::Virtual;
++    } else if (parser.isSet(translatorOption)) {
++        backendType = BackendType::Translator;
+     } else {
+         if (qEnvironmentVariableIsSet("WAYLAND_DISPLAY")) {
+             qInfo("No backend specified, automatically choosing Wayland because WAYLAND_DISPLAY is set");
+@@ -553,6 +559,12 @@ int main(int argc, char *argv[])
+         a.setOutputBackend(std::move(outputBackend));
+         break;
+     }
++    case BackendType::Translator: {
++        auto outputBackend = std::make_unique<KWin::TranslatorBackend>(initialWindowSize, outputScale);
++        a.setSession(KWin::Session::create(KWin::Session::Type::Noop));
++        a.setOutputBackend(std::move(outputBackend));
++        break;
++    }
+ #if KWIN_BUILD_X11
+     case BackendType::X11: {
+         QString display = parser.value(x11DisplayOption);
