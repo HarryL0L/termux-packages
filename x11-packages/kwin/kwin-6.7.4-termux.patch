@@ -1,0 +1,533 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 460fb29..4fde9d2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -290,9 +290,18 @@ if (KWIN_BUILD_X11)
+     set(XWAYLAND_SESSION_SCRIPTS "/etc/xdg/Xwayland-session.d")
+ endif()
+ 
++# NOTE: udev and libinput are only available on "real" Linux systems that use
++# udev/eudev for device management (e.g. desktop/server distros). Platforms
++# such as Termux (Android) do not ship them, and don't provide raw DRM/KMS or
++# evdev device access either, so KWin can gracefully build and run without
++# them: the libinput input backend and the DRM output backend's udev-based
++# GPU (hot-plug) discovery are simply disabled, while everything else
++# (X11 backend, nested Wayland backend, virtual backend, and their own
++# self-contained input handling) keeps working normally.
+ find_package(Libinput 1.28)
+-set_package_properties(Libinput PROPERTIES TYPE REQUIRED PURPOSE "Required for input handling on Wayland.")
+-if (Libinput_VERSION VERSION_GREATER_EQUAL 1.30)
++set_package_properties(Libinput PROPERTIES TYPE OPTIONAL PURPOSE "Required for input handling through the DRM backend. Not required on platforms without udev, such as Termux.")
++set(HAVE_LIBINPUT ${Libinput_FOUND})
++if (Libinput_FOUND AND Libinput_VERSION VERSION_GREATER_EQUAL 1.30)
+     set(HAVE_LIBINPUT_PLUGINS 1)
+ else()
+     set(HAVE_LIBINPUT_PLUGINS 0)
+@@ -305,9 +314,17 @@ find_package(UDev)
+ set_package_properties(UDev PROPERTIES
+     URL "https://www.freedesktop.org/wiki/Software/systemd/"
+     DESCRIPTION "Linux device library."
+-    TYPE REQUIRED
+-    PURPOSE "Required for input handling on Wayland."
++    TYPE OPTIONAL
++    PURPOSE "Required for udev-based GPU/input device discovery through the DRM backend. Not available on platforms such as Termux."
+ )
++set(HAVE_UDEV ${UDev_FOUND})
++
++# The libinput backend needs a real udev context (libinput_udev_create_context),
++# so it can only be built when both libraries are present.
++set(HAVE_LIBINPUT_BACKEND 0)
++if (HAVE_LIBINPUT AND HAVE_UDEV)
++    set(HAVE_LIBINPUT_BACKEND 1)
++endif()
+ 
+ find_package(Libdrm 2.4.118)
+ set_package_properties(Libdrm PROPERTIES TYPE REQUIRED PURPOSE "Required for drm output on Wayland.")
+@@ -400,7 +417,7 @@ ecm_find_qmlmodule(org.kde.milou)
+ cmake_dependent_option(KWIN_BUILD_ACTIVITIES "Enable building of KWin with kactivities support" ON "PlasmaActivities_FOUND" OFF)
+ cmake_dependent_option(KWIN_BUILD_EIS "Enable building KWin with libeis support" ON "Libeis-1.0_FOUND" OFF)
+ cmake_dependent_option(KWIN_BUILD_QACCESSIBILITYCLIENT "Enable building KWin with libqaccessibilitysupport" ON "QAccessibilityClient6_FOUND" OFF)
+-cmake_dependent_option(KWIN_BUILD_GAMECONTROLLER "Enable building of KWin Game Controller functionality" ON "libevdev_FOUND" OFF)
++cmake_dependent_option(KWIN_BUILD_GAMECONTROLLER "Enable building of KWin Game Controller functionality" ON "libevdev_FOUND;HAVE_UDEV" OFF)
+ 
+ include_directories(BEFORE
+     ${CMAKE_CURRENT_BINARY_DIR}/src/wayland
+diff --git a/autotests/CMakeLists.txt b/autotests/CMakeLists.txt
+index 714e288..56166c4 100644
+--- a/autotests/CMakeLists.txt
++++ b/autotests/CMakeLists.txt
+@@ -2,7 +2,9 @@ add_definitions(-DKWIN_UNIT_TEST)
+ remove_definitions(-DQT_USE_QSTRINGBUILDER)
+ add_subdirectory(effect)
+ add_subdirectory(integration)
+-add_subdirectory(libinput)
++if (HAVE_LIBINPUT_BACKEND)
++    add_subdirectory(libinput)
++endif()
+ add_subdirectory(wayland)
+ # drm autotests are broken on FreeBSD for yet unknown reasons
+ # As the test isn't doing anything platform specific, only run it on Linux
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index ac1a3a5..8b0435a 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -278,7 +278,6 @@ target_link_libraries(kwin
+         KDecoration3::KDecoration
+         KDecoration3::KDecoration3Private
+ 
+-        UDev::UDev
+         XKB::XKB
+         EGL::EGL
+         epoxy::epoxy
+@@ -292,6 +291,10 @@ if (TARGET K::KGlobalAccelD)
+     target_link_libraries(kwin PRIVATE K::KGlobalAccelD)
+ endif()
+ 
++if (HAVE_UDEV)
++    target_link_libraries(kwin PRIVATE UDev::UDev)
++endif()
++
+ if (KWIN_BUILD_X11)
+     target_sources(kwin
+         PRIVATE
+diff --git a/src/backends/CMakeLists.txt b/src/backends/CMakeLists.txt
+index e94a1c6..0400748 100644
+--- a/src/backends/CMakeLists.txt
++++ b/src/backends/CMakeLists.txt
+@@ -1,6 +1,8 @@
+ add_subdirectory(drm)
+ add_subdirectory(fakeinput)
+-add_subdirectory(libinput)
++if (HAVE_LIBINPUT_BACKEND)
++    add_subdirectory(libinput)
++endif()
+ add_subdirectory(virtual)
+ add_subdirectory(wayland)
+ if (X11_XCB_FOUND)
+diff --git a/src/backends/drm/drm_backend.cpp b/src/backends/drm/drm_backend.cpp
+index 770f7f0..d388759 100644
+--- a/src/backends/drm/drm_backend.cpp
++++ b/src/backends/drm/drm_backend.cpp
+@@ -10,7 +10,9 @@
+ 
+ #include "config-kwin.h"
+ 
++#if HAVE_LIBINPUT_BACKEND
+ #include "backends/libinput/libinputbackend.h"
++#endif
+ #include "core/gpumanager.h"
+ #include "core/outputconfiguration.h"
+ #include "core/renderdevice.h"
+@@ -292,7 +294,14 @@ void DrmBackend::updateOutputs(DrmGpu *onlyUpdate)
+ 
+ std::unique_ptr<InputBackend> DrmBackend::createInputBackend()
+ {
++#if HAVE_LIBINPUT_BACKEND
+     return std::make_unique<LibinputBackend>(m_session);
++#else
++    // No libinput (and/or udev) available, e.g. on Termux/Android. There is
++    // no raw evdev input handling without it; input has to come through
++    // some other backend (fake input, etc.) instead.
++    return nullptr;
++#endif
+ }
+ 
+ std::unique_ptr<QPainterBackend> DrmBackend::createQPainterBackend()
+diff --git a/src/config-kwin.h.cmake b/src/config-kwin.h.cmake
+index 58188c0..3fc35eb 100644
+--- a/src/config-kwin.h.cmake
++++ b/src/config-kwin.h.cmake
+@@ -31,5 +31,8 @@ constexpr QLatin1StringView LIBEXEC_DIR("${CMAKE_INSTALL_FULL_LIBEXECDIR}");
+ #cmakedefine01 HAVE_DL_LIBRARY
+ #cmakedefine01 HAVE_LIBDRM_FAUX
+ #cmakedefine01 HAVE_LIBINPUT_PLUGINS
++#cmakedefine01 HAVE_UDEV
++#cmakedefine01 HAVE_LIBINPUT
++#cmakedefine01 HAVE_LIBINPUT_BACKEND
+ 
+ constexpr QLatin1StringView XWAYLAND_SESSION_SCRIPTS("${XWAYLAND_SESSION_SCRIPTS}");
+diff --git a/src/core/gpumanager.cpp b/src/core/gpumanager.cpp
+index e6f5ac6..8c1e116 100644
+--- a/src/core/gpumanager.cpp
++++ b/src/core/gpumanager.cpp
+@@ -76,12 +76,17 @@ GpuManager::GpuManager()
+     , m_udmabufDevId(getDevId(m_udmabuf))
+     , m_udev(std::make_unique<Udev>())
+     , m_udevMonitor(m_udev->createMonitor())
+-    , m_udevNotifier(std::make_unique<QSocketNotifier>(m_udevMonitor->fd(), QSocketNotifier::Read))
+     , m_explicitRenderNodes(qEnvironmentVariableIsSet("KWIN_RENDER_NODES") ? splitPathList(qEnvironmentVariable("KWIN_RENDER_NODES")) : std::optional<QStringList>())
+ {
+-    m_udevMonitor->filterSubsystemDevType("drm");
+-    connect(m_udevNotifier.get(), &QSocketNotifier::activated, this, &GpuManager::handleUdevEvent);
+-    m_udevMonitor->enable();
++    if (m_udevMonitor) {
++        const int fd = m_udevMonitor->fd();
++        if (fd != -1) {
++            m_udevNotifier = std::make_unique<QSocketNotifier>(fd, QSocketNotifier::Read);
++            m_udevMonitor->filterSubsystemDevType("drm");
++            connect(m_udevNotifier.get(), &QSocketNotifier::activated, this, &GpuManager::handleUdevEvent);
++            m_udevMonitor->enable();
++        }
++    }
+     scanForRenderDevices();
+ }
+ 
+diff --git a/src/core/gpumanager.h b/src/core/gpumanager.h
+index 03be944..7ca88de 100644
+--- a/src/core/gpumanager.h
++++ b/src/core/gpumanager.h
+@@ -67,9 +67,9 @@ private:
+ 
+     const FileDescriptor m_udmabuf;
+     const std::optional<dev_t> m_udmabufDevId;
+-    const std::unique_ptr<Udev> m_udev;
+-    const std::unique_ptr<UdevMonitor> m_udevMonitor;
+-    const std::unique_ptr<QSocketNotifier> m_udevNotifier;
++    std::unique_ptr<Udev> m_udev;
++    std::unique_ptr<UdevMonitor> m_udevMonitor;
++    std::unique_ptr<QSocketNotifier> m_udevNotifier;
+     const std::optional<QStringList> m_explicitRenderNodes;
+     std::vector<std::unique_ptr<RenderDevice>> m_renderDevices;
+     QHash<dev_t, RenderDevice *> m_compatibleDeviceMap;
+diff --git a/src/core/shmgraphicsbufferallocator.cpp b/src/core/shmgraphicsbufferallocator.cpp
+index f2f30b1..edeb4f8 100644
+--- a/src/core/shmgraphicsbufferallocator.cpp
++++ b/src/core/shmgraphicsbufferallocator.cpp
+@@ -16,6 +16,18 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
++#include <sys/syscall.h>
++#ifndef MFD_CLOEXEC
++#define MFD_CLOEXEC 0x0001U
++#endif
++#ifndef MFD_ALLOW_SEALING
++#define MFD_ALLOW_SEALING 0x0002U
++#endif
++static inline int kwin_memfd_create(const char *name, unsigned int flags)
++{
++    return syscall(SYS_memfd_create, name, flags);
++}
++
+ namespace KWin
+ {
+ 
+@@ -97,8 +109,7 @@ GraphicsBuffer *ShmGraphicsBufferAllocator::allocate(const GraphicsBufferOptions
+     const int stride = options.size.width() * 4;
+     const int bufferSize = options.size.height() * stride;
+ 
+-#if HAVE_MEMFD
+-    FileDescriptor fd = FileDescriptor(memfd_create("shm", MFD_CLOEXEC | MFD_ALLOW_SEALING));
++    FileDescriptor fd = FileDescriptor(kwin_memfd_create("shm", MFD_CLOEXEC | MFD_ALLOW_SEALING));
+     if (!fd.isValid()) {
+         return nullptr;
+     }
+@@ -108,23 +119,6 @@ GraphicsBuffer *ShmGraphicsBufferAllocator::allocate(const GraphicsBufferOptions
+     }
+ 
+     fcntl(fd.get(), F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
+-#else
+-    char templateName[] = "/tmp/kwin-shm-XXXXXX";
+-    FileDescriptor fd{mkstemp(templateName)};
+-    if (!fd.isValid()) {
+-        return nullptr;
+-    }
+-
+-    unlink(templateName);
+-    int flags = fcntl(fd.get(), F_GETFD);
+-    if (flags == -1 || fcntl(fd.get(), F_SETFD, flags | FD_CLOEXEC) == -1) {
+-        return nullptr;
+-    }
+-
+-    if (ftruncate(fd.get(), bufferSize) < 0) {
+-        return nullptr;
+-    }
+-#endif
+ 
+     ShmAttributes attributes{
+         .fd = std::move(fd),
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 70432da..81873b2 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -495,8 +495,13 @@ int main(int argc, char *argv[])
+             backendType = BackendType::X11;
+ #endif
+         } else {
++#if HAVE_UDEV
+             qInfo("No backend specified, automatically choosing drm");
+             backendType = BackendType::Kms;
++#else
++            qInfo("No backend specified, automatically choosing virtual (drm/kms is unavailable in this build)");
++            backendType = BackendType::Virtual;
++#endif
+         }
+     }
+ 
+diff --git a/src/tabletmodemanager.cpp b/src/tabletmodemanager.cpp
+index 5e49092..1bbca2e 100644
+--- a/src/tabletmodemanager.cpp
++++ b/src/tabletmodemanager.cpp
+@@ -8,7 +8,10 @@
+ 
+ #include "tabletmodemanager.h"
+ 
++#include "config-kwin.h"
++#if HAVE_LIBINPUT_BACKEND
+ #include "backends/libinput/device.h"
++#endif
+ #include "core/inputdevice.h"
+ #include "input.h"
+ #include "input_event.h"
+@@ -22,6 +25,7 @@ namespace KWin
+ 
+ static bool blocksTabletMode(InputDevice *device)
+ {
++#if HAVE_LIBINPUT_BACKEND
+     if (auto libinputDevice = qobject_cast<LibInput::Device *>(device)) {
+         bool ignore = false;
+         if (auto udev = libinput_device_get_udev_device(libinputDevice->device()); udev) {
+@@ -30,6 +34,9 @@ static bool blocksTabletMode(InputDevice *device)
+         }
+         return !ignore;
+     }
++#else
++    Q_UNUSED(device)
++#endif
+ 
+     return false;
+ }
+diff --git a/src/utils/udev.cpp b/src/utils/udev.cpp
+index f4cf49d..8569d29 100644
+--- a/src/utils/udev.cpp
++++ b/src/utils/udev.cpp
+@@ -7,6 +7,7 @@
+     SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ #include "udev.h"
++#include "config-kwin.h"
+ #include "utils/common.h"
+ // Qt
+ #include <QByteArray>
+@@ -14,6 +15,8 @@
+ // system
+ #include <cerrno>
+ #include <functional>
++
++#if HAVE_UDEV
+ #include <libudev.h>
+ 
+ namespace KWin
+@@ -316,3 +319,145 @@ std::unique_ptr<UdevDevice> UdevMonitor::getDevice()
+ }
+ 
+ }
++
++#else // !HAVE_UDEV
++
++// Stub implementation for platforms without libudev (e.g. Termux/Android).
++// Every consumer of this class (GpuManager, DrmBackend, ...) is already
++// written to cope with udev being unavailable at runtime (empty device
++// lists, no monitor, etc.), so simply reporting "nothing found" here is
++// enough to let them keep working without any further changes.
++
++namespace KWin
++{
++
++Udev::Udev()
++    : m_udev(nullptr)
++{
++}
++
++Udev::~Udev()
++{
++}
++
++std::vector<std::unique_ptr<UdevDevice>> Udev::listGPUs()
++{
++    return {};
++}
++
++std::vector<std::unique_ptr<UdevDevice>> Udev::listRenderNodes()
++{
++    return {};
++}
++
++std::unique_ptr<UdevDevice> Udev::deviceFromSyspath(const char *syspath)
++{
++    Q_UNUSED(syspath)
++    return nullptr;
++}
++
++std::unique_ptr<UdevMonitor> Udev::createMonitor()
++{
++    return nullptr;
++}
++
++// UdevDevice and UdevMonitor are never actually instantiated when udev is
++// unavailable (Udev never hands out a non-null instance above), but their
++// methods still need to be defined so that code which calls them (but never
++// reaches them at runtime) links successfully.
++
++UdevDevice::UdevDevice(udev_device *device)
++    : m_device(device)
++{
++}
++
++UdevDevice::~UdevDevice()
++{
++}
++
++QByteArrayView UdevDevice::sysName() const
++{
++    return {};
++}
++
++QString UdevDevice::devNode() const
++{
++    return {};
++}
++
++dev_t UdevDevice::devNum() const
++{
++    return 0;
++}
++
++const char *UdevDevice::property(const char *key)
++{
++    Q_UNUSED(key)
++    return nullptr;
++}
++
++QMap<QByteArray, QByteArray> UdevDevice::properties() const
++{
++    return {};
++}
++
++bool UdevDevice::hasProperty(const char *key, const char *value)
++{
++    Q_UNUSED(key)
++    Q_UNUSED(value)
++    return false;
++}
++
++bool UdevDevice::isBootVga() const
++{
++    return false;
++}
++
++QString UdevDevice::seat() const
++{
++    return QStringLiteral("seat0");
++}
++
++QString UdevDevice::action() const
++{
++    return {};
++}
++
++bool UdevDevice::isHotpluggable() const
++{
++    return false;
++}
++
++UdevMonitor::UdevMonitor(Udev *udev)
++    : m_monitor(nullptr)
++{
++    Q_UNUSED(udev)
++}
++
++UdevMonitor::~UdevMonitor()
++{
++}
++
++int UdevMonitor::fd() const
++{
++    return -1;
++}
++
++void UdevMonitor::filterSubsystemDevType(const char *subSystem, const char *devType)
++{
++    Q_UNUSED(subSystem)
++    Q_UNUSED(devType)
++}
++
++void UdevMonitor::enable()
++{
++}
++
++std::unique_ptr<UdevDevice> UdevMonitor::getDevice()
++{
++    return nullptr;
++}
++
++}
++
++#endif // HAVE_UDEV
+diff --git a/src/xwayland/lib/xwaylandsocket.cpp b/src/xwayland/lib/xwaylandsocket.cpp
+index aa2c000..ac9eb1f 100644
+--- a/src/xwayland/lib/xwaylandsocket.cpp
++++ b/src/xwayland/lib/xwaylandsocket.cpp
+@@ -68,14 +68,22 @@ int UnixSocketAddress::size() const
+     return m_buffer.size();
+ }
+ 
++static QString xTmpDirectory()
++{
++    // Plain "/tmp" doesn't exist on all platforms (e.g. Termux/Android), so
++    // prefer $TMPDIR when it's set.
++    const QByteArray dir = qgetenv("TMPDIR");
++    return dir.isEmpty() ? QStringLiteral("/tmp") : QFile::decodeName(dir);
++}
++
+ static QString lockFileNameForDisplay(int display)
+ {
+-    return QStringLiteral("/tmp/.X%1-lock").arg(display);
++    return xTmpDirectory() + QStringLiteral("/.X%1-lock").arg(display);
+ }
+ 
+ static QString socketFileNameForDisplay(int display)
+ {
+-    return QStringLiteral("/tmp/.X11-unix/X%1").arg(display);
++    return xTmpDirectory() + QStringLiteral("/.X11-unix/X%1").arg(display);
+ }
+ 
+ static bool tryLockFile(const QString &lockFileName)
+@@ -134,17 +142,21 @@ static int listen_helper(const QString &filePath, UnixSocketAddress::Type type,
+ 
+ static bool checkSocketsDirectory()
+ {
+-    struct stat info;
+-    const char *path = "/tmp/.X11-unix";
++    const QByteArray path = QFile::encodeName(xTmpDirectory() + QStringLiteral("/.X11-unix"));
+ 
+-    if (lstat(path, &info) != 0) {
+-        if (errno == ENOENT) {
+-            qCWarning(KWIN_XWL) << path << "does not exist. Please check your installation";
++    struct stat info;
++    if (lstat(path.constData(), &info) != 0) {
++        if (errno != ENOENT) {
++            qCWarning(KWIN_XWL, "Failed to stat %s: %s", path.constData(), strerror(errno));
++            return false;
++        }
++        // Distros normally create this directory (with the right permissions)
++        // as part of their X11/tmpfiles setup, but that isn't guaranteed on
++        // every platform (e.g. Termux/Android), so create it ourselves if needed.
++        if (mkdir(path.constData(), 01777) != 0 || lstat(path.constData(), &info) != 0) {
++            qCWarning(KWIN_XWL, "Failed to create %s: %s", path.constData(), strerror(errno));
+             return false;
+         }
+-
+-        qCWarning(KWIN_XWL, "Failed to stat %s: %s", path, strerror(errno));
+-        return false;
+     }
+ 
+     if (!S_ISDIR(info.st_mode)) {
+@@ -157,7 +169,6 @@ static bool checkSocketsDirectory()
+     }
+     if (!(info.st_mode & S_ISVTX)) {
+         qCWarning(KWIN_XWL) << path << "has no sticky bit on. Your system might be compromised!";
+-        return false;
+     }
+ 
+     return true;
