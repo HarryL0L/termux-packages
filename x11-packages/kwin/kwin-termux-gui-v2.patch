@@ -1,0 +1,731 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4fde9d2..e9bb376 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -326,6 +326,13 @@ if (HAVE_LIBINPUT AND HAVE_UDEV)
+     set(HAVE_LIBINPUT_BACKEND 1)
+ endif()
+ 
++find_path(TERMUXGUI_INCLUDE_DIR termuxgui/termuxgui.h)
++find_library(TERMUXGUI_LIBRARY NAMES termuxgui)
++set(HAVE_TERMUX_GUI 0)
++if (TERMUXGUI_INCLUDE_DIR AND TERMUXGUI_LIBRARY)
++    set(HAVE_TERMUX_GUI 1)
++endif()
++
+ find_package(Libdrm 2.4.118)
+ set_package_properties(Libdrm PROPERTIES TYPE REQUIRED PURPOSE "Required for drm output on Wayland.")
+ if (Libdrm_VERSION VERSION_GREATER_EQUAL 2.4.127)
+diff --git a/src/backends/CMakeLists.txt b/src/backends/CMakeLists.txt
+index 0400748..cd79623 100644
+--- a/src/backends/CMakeLists.txt
++++ b/src/backends/CMakeLists.txt
+@@ -8,3 +8,6 @@ add_subdirectory(wayland)
+ if (X11_XCB_FOUND)
+     add_subdirectory(x11)
+ endif()
++if (HAVE_TERMUX_GUI)
++    add_subdirectory(termuxgui)
++endif()
+diff --git a/src/backends/termuxgui/CMakeLists.txt b/src/backends/termuxgui/CMakeLists.txt
+new file mode 100644
+index 0000000..5937c56
+--- /dev/null
++++ b/src/backends/termuxgui/CMakeLists.txt
+@@ -0,0 +1,8 @@
++target_sources(kwin PRIVATE
++    termuxgui_backend.cpp
++    termuxgui_qpainter_backend.cpp
++    termuxgui_input.cpp
++)
++
++target_include_directories(kwin PRIVATE ${TERMUXGUI_INCLUDE_DIR})
++target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY} android)
+diff --git a/src/backends/termuxgui/termuxgui_backend.cpp b/src/backends/termuxgui/termuxgui_backend.cpp
+new file mode 100644
+index 0000000..0b37155
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_backend.cpp
+@@ -0,0 +1,109 @@
++#include "termuxgui_backend.h"
++#include "termuxgui_input.h"
++#include "termuxgui_qpainter_backend.h"
++
++#include <QDebug>
++
++namespace KWin
++{
++
++TermuxGuiBackend::TermuxGuiBackend(QObject *parent)
++    : VirtualBackend(parent)
++{
++}
++
++TermuxGuiBackend::~TermuxGuiBackend()
++{
++    if (m_connection) {
++        tgui_connection_destroy(m_connection);
++    }
++}
++
++bool TermuxGuiBackend::initialize()
++{
++    if (tgui_connection_create(&m_connection) != TGUI_ERR_OK) {
++        qWarning() << "Failed to connect to Termux:GUI";
++        return false;
++    }
++
++    if (tgui_activity_create(m_connection, &m_activity, TGUI_ACTIVITY_NORMAL, nullptr, false) != TGUI_ERR_OK) {
++        qWarning() << "Failed to create Termux:GUI activity";
++        return false;
++    }
++
++    for (;;) {
++        tgui_event event{};
++        if (tgui_wait_event(m_connection, &event) != TGUI_ERR_OK) {
++            qWarning() << "Failed waiting for Termux:GUI activity";
++            return false;
++        }
++        const bool created = event.type == TGUI_EVENT_CREATE && event.activity == m_activity;
++        tgui_event_destroy(&event);
++        if (created) {
++            break;
++        }
++    }
++
++    if (tgui_activity_configure_insets(m_connection, m_activity, TGUI_INSET_NONE, TGUI_INSET_BEHAVIOUR_TRANSIENT) != TGUI_ERR_OK) {
++        qWarning() << "Failed to configure Termux:GUI insets";
++        return false;
++    }
++
++    if (tgui_create_surface_view(m_connection, m_activity, &m_surface, nullptr, TGUI_VIS_VISIBLE, false) != TGUI_ERR_OK) {
++        qWarning() << "Failed to create Termux:GUI SurfaceView";
++        return false;
++    }
++
++    if (tgui_set_width(m_connection, m_activity, m_surface, {TGUI_VIEW_MATCH_PARENT, 0}) != TGUI_ERR_OK ||
++        tgui_set_height(m_connection, m_activity, m_surface, {TGUI_VIEW_MATCH_PARENT, 0}) != TGUI_ERR_OK) {
++        qWarning() << "Failed to size Termux:GUI SurfaceView";
++        return false;
++    }
++
++    if (tgui_surface_view_config(m_connection, m_activity, m_surface, 0,
++                                  TGUI_MISMATCH_STICK_TOPLEFT, TGUI_MISMATCH_STICK_TOPLEFT, 60.0f) != TGUI_ERR_OK) {
++        qWarning() << "Failed to configure Termux:GUI SurfaceView";
++        return false;
++    }
++
++    return true;
++}
++
++std::unique_ptr<QPainterBackend> TermuxGuiBackend::createQPainterBackend()
++{
++    return std::make_unique<TermuxGuiQPainterBackend>(this);
++}
++
++std::unique_ptr<InputBackend> TermuxGuiBackend::createInputBackend()
++{
++    return std::make_unique<TermuxGuiInputBackend>(this);
++}
++
++EglDisplay *TermuxGuiBackend::sceneEglDisplayObject() const
++{
++    return nullptr;
++}
++
++QList<CompositingType> TermuxGuiBackend::supportedCompositors() const
++{
++    return {QPainterCompositing};
++}
++
++tgui_connection TermuxGuiBackend::connection() const
++{
++    return m_connection;
++}
++
++tgui_activity TermuxGuiBackend::activity() const
++{
++    return m_activity;
++}
++
++tgui_view TermuxGuiBackend::surface() const
++{
++    return m_surface;
++}
++
++} // namespace KWin
++
++#include "moc_termuxgui_backend.cpp"
+diff --git a/src/backends/termuxgui/termuxgui_backend.h b/src/backends/termuxgui/termuxgui_backend.h
+new file mode 100644
+index 0000000..d0883c8
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_backend.h
+@@ -0,0 +1,34 @@
++#pragma once
++
++#include "backends/virtual/virtual_backend.h"
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class TermuxGuiBackend : public VirtualBackend
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiBackend(QObject *parent = nullptr);
++    ~TermuxGuiBackend() override;
++
++    bool initialize() override;
++    std::unique_ptr<QPainterBackend> createQPainterBackend() override;
++    std::unique_ptr<InputBackend> createInputBackend() override;
++    EglDisplay *sceneEglDisplayObject() const override;
++    QList<CompositingType> supportedCompositors() const override;
++
++    tgui_connection connection() const;
++    tgui_activity activity() const;
++    tgui_view surface() const;
++
++private:
++    tgui_connection m_connection = nullptr;
++    tgui_activity m_activity = -1;
++    tgui_view m_surface = -1;
++};
++
++} // namespace KWin
+diff --git a/src/backends/termuxgui/termuxgui_input.cpp b/src/backends/termuxgui/termuxgui_input.cpp
+new file mode 100644
+index 0000000..1d3f7c5
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_input.cpp
+@@ -0,0 +1,157 @@
++#include "termuxgui_input.h"
++#include "termuxgui_backend.h"
++
++namespace KWin
++{
++
++TermuxGuiInputDevice::TermuxGuiInputDevice(QObject *parent)
++    : InputDevice(parent)
++{
++}
++
++QString TermuxGuiInputDevice::name() const
++{
++    return QStringLiteral("Termux:GUI Touchscreen");
++}
++
++bool TermuxGuiInputDevice::isEnabled() const
++{
++    return m_enabled;
++}
++
++void TermuxGuiInputDevice::setEnabled(bool enabled)
++{
++    m_enabled = enabled;
++}
++
++bool TermuxGuiInputDevice::isKeyboard() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isPointer() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTouchpad() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTouch() const
++{
++    return true;
++}
++
++bool TermuxGuiInputDevice::isTabletTool() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTabletPad() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTabletModeSwitch() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isLidSwitch() const
++{
++    return false;
++}
++
++TermuxGuiInputBackend::TermuxGuiInputBackend(TermuxGuiBackend *backend)
++    : m_backend(backend)
++{
++}
++
++TermuxGuiInputBackend::~TermuxGuiInputBackend()
++{
++    m_timer.stop();
++    if (m_device) {
++        Q_EMIT deviceRemoved(m_device.get());
++    }
++}
++
++void TermuxGuiInputBackend::initialize()
++{
++    m_device = std::make_unique<TermuxGuiInputDevice>();
++    Q_EMIT deviceAdded(m_device.get());
++
++    if (tgui_send_touch_event(m_backend->connection(), m_backend->activity(), m_backend->surface(), true) != TGUI_ERR_OK) {
++        Q_EMIT deviceRemoved(m_device.get());
++        m_device.reset();
++        return;
++    }
++
++    connect(&m_timer, &QTimer::timeout, this, &TermuxGuiInputBackend::pollEvents);
++    m_timer.start(4); // Poll frequently without busy-spinning.
++}
++
++void TermuxGuiInputBackend::pollEvents()
++{
++    for (;;) {
++        tgui_event event{};
++        bool available = false;
++        if (tgui_poll_event(m_backend->connection(), &event, &available) != TGUI_ERR_OK || !available) {
++            return;
++        }
++        processEvent(event);
++        tgui_event_destroy(&event);
++    }
++}
++
++void TermuxGuiInputBackend::processEvent(const tgui_event &event)
++{
++    if (!m_device || event.type != TGUI_EVENT_TOUCH || event.touch.id != m_backend->surface()) {
++        return;
++    }
++
++    const auto time = std::chrono::milliseconds(event.touch.time);
++    switch (event.touch.action) {
++    case TGUI_TOUCH_DOWN:
++    case TGUI_TOUCH_POINTER_DOWN: {
++        if (event.touch.events == 0 || event.touch.index >= event.touch.num_pointers) {
++            return;
++        }
++        const auto pointer = event.touch.pointers[event.touch.events - 1][event.touch.index];
++        Q_EMIT m_device->touchDown(pointer.id, QPointF(pointer.x, pointer.y), time, m_device.get());
++        Q_EMIT m_device->touchFrame(m_device.get());
++        break;
++    }
++    case TGUI_TOUCH_UP:
++    case TGUI_TOUCH_POINTER_UP: {
++        if (event.touch.events == 0 || event.touch.index >= event.touch.num_pointers) {
++            return;
++        }
++        const auto pointer = event.touch.pointers[event.touch.events - 1][event.touch.index];
++        Q_EMIT m_device->touchUp(pointer.id, time, m_device.get());
++        Q_EMIT m_device->touchFrame(m_device.get());
++        break;
++    }
++    case TGUI_TOUCH_MOVE: {
++        if (event.touch.events == 0) {
++            return;
++        }
++        const uint32_t lastEvent = event.touch.events - 1;
++        for (uint32_t i = 0; i < event.touch.num_pointers; ++i) {
++            const auto pointer = event.touch.pointers[lastEvent][i];
++            Q_EMIT m_device->touchMotion(pointer.id, QPointF(pointer.x, pointer.y), time, m_device.get());
++        }
++        Q_EMIT m_device->touchFrame(m_device.get());
++        break;
++    }
++    case TGUI_TOUCH_CANCEL:
++        Q_EMIT m_device->touchCanceled(m_device.get());
++        Q_EMIT m_device->touchFrame(m_device.get());
++        break;
++    }
++}
++
++} // namespace KWin
++
++#include "moc_termuxgui_input.cpp"
+diff --git a/src/backends/termuxgui/termuxgui_input.h b/src/backends/termuxgui/termuxgui_input.h
+new file mode 100644
+index 0000000..5643a7c
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_input.h
+@@ -0,0 +1,57 @@
++#pragma once
++
++#include "core/inputbackend.h"
++#include "core/inputdevice.h"
++
++#include <termuxgui/termuxgui.h>
++
++#include <QTimer>
++
++namespace KWin
++{
++
++class TermuxGuiBackend;
++
++class TermuxGuiInputDevice : public InputDevice
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiInputDevice(QObject *parent = nullptr);
++
++    QString name() const override;
++    bool isEnabled() const override;
++    void setEnabled(bool enabled) override;
++    bool isKeyboard() const override;
++    bool isPointer() const override;
++    bool isTouchpad() const override;
++    bool isTouch() const override;
++    bool isTabletTool() const override;
++    bool isTabletPad() const override;
++    bool isTabletModeSwitch() const override;
++    bool isLidSwitch() const override;
++
++private:
++    bool m_enabled = true;
++};
++
++class TermuxGuiInputBackend : public InputBackend
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiInputBackend(TermuxGuiBackend *backend);
++    ~TermuxGuiInputBackend() override;
++
++    void initialize() override;
++
++private:
++    void pollEvents();
++    void processEvent(const tgui_event &event);
++
++    TermuxGuiBackend *const m_backend;
++    std::unique_ptr<TermuxGuiInputDevice> m_device;
++    QTimer m_timer;
++};
++
++} // namespace KWin
+diff --git a/src/backends/termuxgui/termuxgui_qpainter_backend.cpp b/src/backends/termuxgui/termuxgui_qpainter_backend.cpp
+new file mode 100644
+index 0000000..148341f
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_qpainter_backend.cpp
+@@ -0,0 +1,153 @@
++#include "termuxgui_qpainter_backend.h"
++#include "termuxgui_backend.h"
++#include "backends/virtual/virtual_output.h"
++
++#include <android/hardware_buffer.h>
++
++#include <cstring>
++#include <unistd.h>
++
++namespace KWin
++{
++
++TermuxGuiQPainterLayer::TermuxGuiQPainterLayer(BackendOutput *output, TermuxGuiBackend *backend)
++    : OutputLayer(output, OutputLayerType::Primary)
++    , m_backend(backend)
++{
++}
++
++TermuxGuiQPainterLayer::~TermuxGuiQPainterLayer()
++{
++    destroyBuffer();
++}
++
++std::optional<OutputLayerBeginFrameInfo> TermuxGuiQPainterLayer::doBeginFrame()
++{
++    const QSize size = m_output->modeSize();
++    if (m_image.size() != size || !m_bufferValid) {
++        m_image = QImage(size, QImage::Format_RGBX8888);
++        if (m_image.isNull()) {
++            return std::nullopt;
++        }
++        m_image.fill(Qt::black);
++        if (!createBuffer(size)) {
++            return std::nullopt;
++        }
++    }
++
++    m_renderTime = std::make_unique<CpuRenderTimeQuery>();
++    return OutputLayerBeginFrameInfo{
++        .renderTarget = RenderTarget(&m_image),
++        .repaint = Region::infinite(),
++    };
++}
++
++bool TermuxGuiQPainterLayer::doEndFrame(const Region &, const Region &, OutputFrame *frame)
++{
++    m_renderTime->end();
++    frame->addRenderTimeQuery(std::move(m_renderTime));
++    return uploadBuffer();
++}
++
++DrmDevice *TermuxGuiQPainterLayer::scanoutDevice() const
++{
++    return nullptr;
++}
++
++FormatModifierMap TermuxGuiQPainterLayer::supportedDrmFormats() const
++{
++    return {};
++}
++
++void TermuxGuiQPainterLayer::releaseBuffers()
++{
++    destroyBuffer();
++}
++
++bool TermuxGuiQPainterLayer::createBuffer(const QSize &size)
++{
++    destroyBuffer();
++    if (tgui_hardware_buffer_create(m_backend->connection(), &m_buffer,
++                                    TGUI_HARDWARE_BUFFER_FORMAT_RGBX8888,
++                                    size.width(), size.height(),
++                                    TGUI_HARDWARE_BUFFER_CPU_NEVER,
++                                    TGUI_HARDWARE_BUFFER_CPU_OFTEN) != TGUI_ERR_OK) {
++        return false;
++    }
++    m_bufferValid = true;
++    if (tgui_surface_view_set_buffer(m_backend->connection(), m_backend->activity(),
++                                      m_backend->surface(), &m_buffer) != TGUI_ERR_OK) {
++        destroyBuffer();
++        return false;
++    }
++    return true;
++}
++
++bool TermuxGuiQPainterLayer::uploadBuffer()
++{
++    if (!m_bufferValid || !m_buffer.buffer) {
++        return false;
++    }
++
++    AHardwareBuffer_Desc desc{};
++    AHardwareBuffer_describe(m_buffer.buffer, &desc);
++
++    void *data = nullptr;
++    if (AHardwareBuffer_lock(m_buffer.buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
++                              -1, nullptr, &data) != 0 || !data) {
++        return false;
++    }
++
++    const auto *src = m_image.constBits();
++    auto *dst = static_cast<unsigned char *>(data);
++    const qsizetype rowBytes = static_cast<qsizetype>(m_image.width()) * 4;
++    const qsizetype strideBytes = static_cast<qsizetype>(desc.stride) * 4;
++    for (int y = 0; y < m_image.height(); ++y) {
++        memcpy(dst + y * strideBytes, src + y * m_image.bytesPerLine(), rowBytes);
++    }
++
++    const int fence = AHardwareBuffer_unlock(m_buffer.buffer, nullptr);
++    if (fence >= 0) {
++        close(fence);
++    }
++    return true;
++}
++
++void TermuxGuiQPainterLayer::destroyBuffer()
++{
++    if (m_bufferValid) {
++        tgui_hardware_buffer_destroy(m_backend->connection(), &m_buffer);
++        m_buffer = {};
++        m_bufferValid = false;
++    }
++}
++
++TermuxGuiQPainterBackend::TermuxGuiQPainterBackend(TermuxGuiBackend *backend)
++    : m_backend(backend)
++{
++    connect(backend, &VirtualBackend::outputAdded, this, &TermuxGuiQPainterBackend::addOutput);
++    for (BackendOutput *output : backend->outputs()) {
++        addOutput(output);
++    }
++}
++
++TermuxGuiQPainterBackend::~TermuxGuiQPainterBackend()
++{
++    for (BackendOutput *output : m_backend->outputs()) {
++        static_cast<VirtualOutput *>(output)->setOutputLayer(nullptr);
++    }
++}
++
++void TermuxGuiQPainterBackend::addOutput(BackendOutput *output)
++{
++    static_cast<VirtualOutput *>(output)->setOutputLayer(std::make_unique<TermuxGuiQPainterLayer>(output, m_backend));
++}
++
++QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
++{
++    return {static_cast<VirtualOutput *>(output)->outputLayer()};
++}
++
++} // namespace KWin
++
++#include "moc_termuxgui_qpainter_backend.cpp"
+diff --git a/src/backends/termuxgui/termuxgui_qpainter_backend.h b/src/backends/termuxgui/termuxgui_qpainter_backend.h
+new file mode 100644
+index 0000000..472579f
+--- /dev/null
++++ b/src/backends/termuxgui/termuxgui_qpainter_backend.h
+@@ -0,0 +1,57 @@
++#pragma once
++
++#include "core/outputlayer.h"
++#include "qpainter/qpainterbackend.h"
++
++#include <termuxgui/termuxgui.h>
++
++#include <QImage>
++
++#include <memory>
++
++namespace KWin
++{
++
++class TermuxGuiBackend;
++
++class TermuxGuiQPainterLayer : public OutputLayer
++{
++public:
++    TermuxGuiQPainterLayer(BackendOutput *output, TermuxGuiBackend *backend);
++    ~TermuxGuiQPainterLayer() override;
++
++    std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
++    bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
++    DrmDevice *scanoutDevice() const override;
++    FormatModifierMap supportedDrmFormats() const override;
++    void releaseBuffers() override;
++
++private:
++    bool createBuffer(const QSize &size);
++    bool uploadBuffer();
++    void destroyBuffer();
++
++    TermuxGuiBackend *const m_backend;
++    QImage m_image;
++    tgui_hardware_buffer m_buffer{};
++    bool m_bufferValid = false;
++    std::unique_ptr<CpuRenderTimeQuery> m_renderTime;
++};
++
++class TermuxGuiQPainterBackend : public QPainterBackend
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiQPainterBackend(TermuxGuiBackend *backend);
++    ~TermuxGuiQPainterBackend() override;
++
++    QList<OutputLayer *> compatibleOutputLayers(BackendOutput *output) override;
++
++private:
++    void addOutput(BackendOutput *output);
++
++    TermuxGuiBackend *const m_backend;
++};
++
++} // namespace KWin
+diff --git a/src/config-kwin.h.cmake b/src/config-kwin.h.cmake
+index 3fc35eb..414cce1 100644
+--- a/src/config-kwin.h.cmake
++++ b/src/config-kwin.h.cmake
+@@ -34,5 +34,6 @@ constexpr QLatin1StringView LIBEXEC_DIR("${CMAKE_INSTALL_FULL_LIBEXECDIR}");
+ #cmakedefine01 HAVE_UDEV
+ #cmakedefine01 HAVE_LIBINPUT
+ #cmakedefine01 HAVE_LIBINPUT_BACKEND
++#cmakedefine01 HAVE_TERMUX_GUI
+ 
+ constexpr QLatin1StringView XWAYLAND_SESSION_SCRIPTS("${XWAYLAND_SESSION_SCRIPTS}");
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 81873b2..a793ac6 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -11,6 +11,9 @@
+ #include "config-kwin.h"
+ 
+ #include "backends/drm/drm_backend.h"
++#if HAVE_TERMUX_GUI
++#include "backends/termuxgui/termuxgui_backend.h"
++#endif
+ #include "backends/virtual/virtual_backend.h"
+ #include "backends/wayland/wayland_backend.h"
+ #include "compositor.h"
+@@ -335,6 +338,9 @@ int main(int argc, char *argv[])
+                                             i18n("The Wayland Display to use in windowed mode on platform Wayland."),
+                                             QStringLiteral("display"));
+     QCommandLineOption virtualFbOption(QStringLiteral("virtual"), i18n("Render to a virtual framebuffer."));
++#if HAVE_TERMUX_GUI
++    QCommandLineOption termuxGuiOption(QStringLiteral("termux-gui"), i18n("Render through Termux:GUI."));
++#endif
+     QCommandLineOption widthOption(QStringLiteral("width"),
+                                    i18n("The width for windowed mode. Default width is 1024."),
+                                    QStringLiteral("width"));
+@@ -396,6 +402,9 @@ int main(int argc, char *argv[])
+ #endif
+     parser.addOption(waylandDisplayOption);
+     parser.addOption(virtualFbOption);
++#if HAVE_TERMUX_GUI
++    parser.addOption(termuxGuiOption);
++#endif
+     parser.addOption(widthOption);
+     parser.addOption(heightOption);
+     parser.addOption(scaleOption);
+@@ -467,6 +476,9 @@ int main(int argc, char *argv[])
+ #endif
+         Wayland,
+         Virtual,
++#if HAVE_TERMUX_GUI
++        TermuxGui,
++#endif
+     };
+ 
+     BackendType backendType;
+@@ -485,6 +497,10 @@ int main(int argc, char *argv[])
+         backendType = BackendType::Wayland;
+     } else if (parser.isSet(virtualFbOption)) {
+         backendType = BackendType::Virtual;
++#if HAVE_TERMUX_GUI
++    } else if (parser.isSet(termuxGuiOption)) {
++        backendType = BackendType::TermuxGui;
++#endif
+     } else {
+         if (qEnvironmentVariableIsSet("WAYLAND_DISPLAY")) {
+             qInfo("No backend specified, automatically choosing Wayland because WAYLAND_DISPLAY is set");
+@@ -546,6 +562,18 @@ int main(int argc, char *argv[])
+         }
+         a.setOutputBackend(std::make_unique<KWin::DrmBackend>(a.session()));
+         break;
++#if HAVE_TERMUX_GUI
++    case BackendType::TermuxGui: {
++        auto outputBackend = std::make_unique<KWin::TermuxGuiBackend>();
++        outputBackend->addOutput(KWin::VirtualBackend::OutputInfo{
++            .size = initialWindowSize,
++            .scale = outputScale,
++        });
++        a.setSession(KWin::Session::create(KWin::Session::Type::Noop));
++        a.setOutputBackend(std::move(outputBackend));
++        break;
++    }
++#endif
+     case BackendType::Virtual: {
+         auto outputBackend = std::make_unique<KWin::VirtualBackend>();
+         for (int i = 0; i < outputCount; ++i) {
