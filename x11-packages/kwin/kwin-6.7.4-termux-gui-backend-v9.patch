@@ -1,0 +1,911 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4fde9d2..e3060d9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -345,0 +346,15 @@ if (gbm_VERSION VERSION_GREATER_EQUAL 21.3)
++# Termux:GUI software output backend
++find_path(TermuxGui_INCLUDE_DIR
++    NAMES termuxgui/termuxgui.h
++)
++find_library(TermuxGui_LIBRARY
++    NAMES termuxgui
++)
++set(HAVE_TERMUX_GUI 0)
++if (TermuxGui_INCLUDE_DIR AND TermuxGui_LIBRARY)
++    set(HAVE_TERMUX_GUI 1)
++endif()
++message(STATUS "Termux:GUI include: ${TermuxGui_INCLUDE_DIR}")
++message(STATUS "Termux:GUI library: ${TermuxGui_LIBRARY}")
++message(STATUS "Termux:GUI backend: ${HAVE_TERMUX_GUI}")
++
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 8b0435a..60c3c81 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -699,0 +700,15 @@ ecm_generate_qdoc(kwin kwin.qdocconf)
++
++
++if (HAVE_TERMUX_GUI)
++    target_sources(kwin PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}/backends/translator/translator_backend.cpp
++        ${CMAKE_CURRENT_SOURCE_DIR}/backends/translator/translator_input.cpp
++        ${CMAKE_CURRENT_SOURCE_DIR}/backends/translator/translator_output.cpp
++        ${CMAKE_CURRENT_SOURCE_DIR}/backends/translator/translator_qpainter_backend.cpp
++    )
++endif()
++
++if (HAVE_TERMUX_GUI)
++    target_include_directories(kwin PRIVATE ${TermuxGui_INCLUDE_DIR})
++    target_link_libraries(kwin PRIVATE ${TermuxGui_LIBRARY} android)
++endif()
+diff --git a/src/backends/translator/translator_backend.cpp b/src/backends/translator/translator_backend.cpp
+new file mode 100644
+index 0000000..af67689
+--- /dev/null
++++ b/src/backends/translator/translator_backend.cpp
+@@ -0,0 +1,157 @@
++#include "translator_backend.h"
++
++#include "core/output.h"
++#include "qpainter/qpainterbackend.h"
++#include "core/outputbackend.h"
++#include "translator_qpainter_backend.h"
++#include "translator_input.h"
++#include "translator_output.h"
++
++#include <QLoggingCategory>
++
++namespace KWin
++{
++
++Q_LOGGING_CATEGORY(KWIN_TRANSLATOR, "kwin.backend.translator")
++
++TranslatorBackend::TranslatorBackend(const Options &options, QObject *parent)
++    : OutputBackend(parent)
++    , m_options(options)
++{
++}
++
++TranslatorBackend::~TranslatorBackend()
++{
++    m_eventTimer.stop();
++    if (m_connection) {
++        tgui_connection_destroy(m_connection);
++        m_connection = nullptr;
++    }
++}
++
++bool TranslatorBackend::initialize()
++{
++    tgui_err err = tgui_connection_create(&m_connection);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to connect to Termux:GUI:" << err;
++        return false;
++    }
++
++    err = tgui_activity_create(m_connection, &m_activity, TGUI_ACTIVITY_NORMAL, nullptr, false);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to create Termux:GUI activity:" << err;
++        return false;
++    }
++
++    err = tgui_create_surface_view(m_connection, m_activity, &m_view, nullptr, TGUI_VIS_VISIBLE, false);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to create Termux:GUI SurfaceView:" << err;
++        return false;
++    }
++
++    err = tgui_set_clickable(m_connection, m_activity, m_view, true);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to make SurfaceView clickable:" << err;
++        return false;
++    }
++
++    err = tgui_send_touch_event(m_connection, m_activity, m_view, true);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to enable SurfaceView touch:" << err;
++        return false;
++    }
++
++    err = tgui_surface_view_config(
++        m_connection, m_activity, m_view,
++        0xff000000,
++        TGUI_MISMATCH_STICK_TOPLEFT,
++        TGUI_MISMATCH_STICK_TOPLEFT,
++        60.0f);
++    if (err != 0) {
++        qCWarning(KWIN_TRANSLATOR) << "Unable to configure SurfaceView:" << err;
++        return false;
++    }
++
++    m_output = std::make_unique<TranslatorOutput>(
++        this, m_options.size, m_options.scale);
++
++    m_eventTimer.setInterval(1);
++    connect(&m_eventTimer, &QTimer::timeout, this, &TranslatorBackend::pollEvents);
++    m_eventTimer.start();
++
++    Q_EMIT outputAdded(m_output.get());
++    Q_EMIT outputsQueried();
++    return true;
++}
++
++void TranslatorBackend::pollEvents()
++{
++    if (!m_connection) {
++        return;
++    }
++
++    for (;;) {
++        tgui_event event;
++        bool available = false;
++        const tgui_err err = tgui_poll_event(m_connection, &event, &available);
++        if (err != 0 || !available) {
++            return;
++        }
++
++        switch (event.type) {
++        case TGUI_EVENT_FRAME_COMPLETE:
++            if (event.frame.id == m_view) {
++                Q_EMIT frameComplete(event.frame.timestamp);
++            }
++            break;
++        case TGUI_EVENT_SURFACE_CHANGED:
++            if (event.surfaceChanged.id == m_view) {
++                Q_EMIT surfaceChanged(QSize(event.surfaceChanged.width, event.surfaceChanged.height));
++            }
++            break;
++        case TGUI_EVENT_TOUCH:
++            if (event.touch.id == m_view) {
++                Q_EMIT touchEvent(event);
++            }
++            break;
++        case TGUI_EVENT_DESTROY:
++            break;
++        default:
++            break;
++        }
++
++        tgui_event_destroy(&event);
++    }
++}
++
++std::unique_ptr<QPainterBackend> TranslatorBackend::createQPainterBackend()
++{
++    return std::make_unique<TranslatorQPainterBackend>(this);
++}
++
++std::unique_ptr<InputBackend> TranslatorBackend::createInputBackend()
++{
++    return std::make_unique<TranslatorInputBackend>(this);
++}
++
++QList<BackendOutput *> TranslatorBackend::outputs() const
++{
++    if (m_output) {
++        return {m_output.get()};
++    }
++    return {};
++}
++
++QList<CompositingType> TranslatorBackend::supportedCompositors() const
++{
++    return {QPainterCompositing};
++}
++
++EglDisplay *TranslatorBackend::sceneEglDisplayObject() const
++{
++    return nullptr;
++}
++
++} // namespace KWin
++
++#include "moc_translator_backend.cpp"
+diff --git a/src/backends/translator/translator_backend.h b/src/backends/translator/translator_backend.h
+new file mode 100644
+index 0000000..a7d98a3
+--- /dev/null
++++ b/src/backends/translator/translator_backend.h
+@@ -0,0 +1,59 @@
++#pragma once
++
++#include "core/outputbackend.h"
++
++#include <QSize>
++#include <QTimer>
++
++#include <memory>
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class TranslatorInputBackend;
++class TranslatorOutput;
++
++class TranslatorBackend : public OutputBackend
++{
++    Q_OBJECT
++public:
++    struct Options {
++        QSize size = QSize(1024, 768);
++        qreal scale = 1;
++    };
++
++    explicit TranslatorBackend(const Options &options, QObject *parent = nullptr);
++    ~TranslatorBackend() override;
++
++    bool initialize() override;
++    std::unique_ptr<QPainterBackend> createQPainterBackend() override;
++    std::unique_ptr<InputBackend> createInputBackend() override;
++
++    QList<BackendOutput *> outputs() const override;
++    QList<CompositingType> supportedCompositors() const override;
++    EglDisplay *sceneEglDisplayObject() const override;
++
++    tgui_connection connection() const { return m_connection; }
++    tgui_activity activity() const { return m_activity; }
++    tgui_view surfaceView() const { return m_view; }
++
++Q_SIGNALS:
++    void touchEvent(const tgui_event &event);
++    void frameComplete(quint64 timestamp);
++    void surfaceChanged(const QSize &size);
++
++private Q_SLOTS:
++    void pollEvents();
++
++private:
++    Options m_options;
++    tgui_connection m_connection = nullptr;
++    tgui_activity m_activity = -1;
++    tgui_view m_view = -1;
++    std::unique_ptr<TranslatorOutput> m_output;
++    QTimer m_eventTimer;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_input.cpp b/src/backends/translator/translator_input.cpp
+new file mode 100644
+index 0000000..2506d7b
+--- /dev/null
++++ b/src/backends/translator/translator_input.cpp
+@@ -0,0 +1,73 @@
++#include "translator_input.h"
++
++#include "translator_backend.h"
++
++#include <QString>
++
++namespace KWin
++{
++
++TranslatorInputDevice::TranslatorInputDevice(QObject *parent)
++    : InputDevice(parent)
++{
++}
++
++QString TranslatorInputDevice::name() const
++{
++    return QStringLiteral("Termux:GUI Touchscreen");
++}
++
++bool TranslatorInputDevice::isEnabled() const { return true; }
++void TranslatorInputDevice::setEnabled(bool) {}
++bool TranslatorInputDevice::isKeyboard() const { return false; }
++bool TranslatorInputDevice::isPointer() const { return false; }
++bool TranslatorInputDevice::isTouchpad() const { return false; }
++bool TranslatorInputDevice::isTouch() const { return true; }
++bool TranslatorInputDevice::isTabletTool() const { return false; }
++bool TranslatorInputDevice::isTabletPad() const { return false; }
++bool TranslatorInputDevice::isTabletModeSwitch() const { return false; }
++bool TranslatorInputDevice::isLidSwitch() const { return false; }
++
++TranslatorInputBackend::TranslatorInputBackend(TranslatorBackend *backend, QObject *parent)
++    : InputBackend(parent)
++    , m_backend(backend)
++    , m_device(new TranslatorInputDevice(this))
++{
++    connect(m_backend, &TranslatorBackend::touchEvent, this, [this](const tgui_event &event) {
++        const auto time = std::chrono::milliseconds(event.touch.time / 1000000);
++        if (event.touch.action == TGUI_TOUCH_CANCEL) {
++            Q_EMIT m_device->touchCanceled(m_device);
++            return;
++        }
++
++        if (event.touch.action == TGUI_TOUCH_DOWN || event.touch.action == TGUI_TOUCH_POINTER_DOWN) {
++            if (event.touch.index < event.touch.num_pointers) {
++                const auto &p = event.touch.pointers[0][event.touch.index];
++                Q_EMIT m_device->touchDown(p.id, QPointF(p.x, p.y), time, m_device);
++            }
++        } else if (event.touch.action == TGUI_TOUCH_UP || event.touch.action == TGUI_TOUCH_POINTER_UP) {
++            if (event.touch.index < event.touch.num_pointers) {
++                const auto &p = event.touch.pointers[0][event.touch.index];
++                Q_EMIT m_device->touchUp(p.id, time, m_device);
++            }
++        } else if (event.touch.action == TGUI_TOUCH_MOVE) {
++            for (uint32_t i = 0; i < event.touch.num_pointers; ++i) {
++                const auto &p = event.touch.pointers[0][i];
++                Q_EMIT m_device->touchMotion(p.id, QPointF(p.x, p.y), time, m_device);
++            }
++        }
++
++        if (event.touch.action != TGUI_TOUCH_CANCEL) {
++            Q_EMIT m_device->touchFrame(m_device);
++        }
++    });
++}
++
++void TranslatorInputBackend::initialize()
++{
++    Q_EMIT deviceAdded(m_device);
++}
++
++} // namespace KWin
++
++#include "moc_translator_input.cpp"
+diff --git a/src/backends/translator/translator_input.h b/src/backends/translator/translator_input.h
+new file mode 100644
+index 0000000..c7d37f0
+--- /dev/null
++++ b/src/backends/translator/translator_input.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++#include "core/inputbackend.h"
++#include "core/inputdevice.h"
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class TranslatorBackend;
++
++class TranslatorInputDevice : public InputDevice
++{
++    Q_OBJECT
++public:
++    explicit TranslatorInputDevice(QObject *parent = nullptr);
++
++    QString name() const override;
++    bool isEnabled() const override;
++    void setEnabled(bool enabled) override;
++    bool isKeyboard() const override;
++    bool isPointer() const override;
++    bool isTouchpad() const override;
++    bool isTouch() const override;
++    bool isTabletTool() const override;
++    bool isTabletPad() const override;
++    bool isTabletModeSwitch() const override;
++    bool isLidSwitch() const override;
++};
++
++class TranslatorInputBackend : public InputBackend
++{
++    Q_OBJECT
++public:
++    explicit TranslatorInputBackend(TranslatorBackend *backend, QObject *parent = nullptr);
++    void initialize() override;
++
++private:
++    TranslatorBackend *m_backend;
++    TranslatorInputDevice *m_device;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_output.cpp b/src/backends/translator/translator_output.cpp
+new file mode 100644
+index 0000000..ccb8578
+--- /dev/null
++++ b/src/backends/translator/translator_output.cpp
+@@ -0,0 +1,240 @@
++#include "translator_output.h"
++
++#include "core/outputconfiguration.h"
++#include "core/outputlayer.h"
++#include "core/renderloop.h"
++#include "translator_backend.h"
++#include "translator_qpainter_backend.h"
++#include "utils/softwarevsyncmonitor.h"
++
++#include <android/hardware_buffer.h>
++#include <QDebug>
++
++#include <algorithm>
++#include <cstring>
++
++namespace KWin
++{
++
++TranslatorOutput::TranslatorOutput(TranslatorBackend *backend, const QSize &size, qreal scale)
++    : BackendOutput()
++    , m_backend(backend)
++    , m_renderLoop(std::make_unique<RenderLoop>(this))
++    , m_vsyncMonitor(SoftwareVsyncMonitor::create())
++    , m_scale(scale)
++    , m_surfaceSize(size)
++{
++    connect(m_vsyncMonitor.get(), &VsyncMonitor::vblankOccurred, this, &TranslatorOutput::vblank);
++    connect(m_backend, &TranslatorBackend::frameComplete, this, [this](quint64) {
++        if (m_pending.empty()) {
++            return;
++        }
++        const PendingFrame pending = m_pending.front();
++        m_pending.pop_front();
++        if (pending.buffer >= 0) {
++            m_bufferValid[pending.buffer] = true;
++        }
++        pending.frame->presented(std::chrono::steady_clock::now().time_since_epoch(), PresentationMode::VSync);
++    });
++    connect(m_backend, &TranslatorBackend::surfaceChanged, this, &TranslatorOutput::setSurfaceSize);
++
++    setInformation(Information{
++        .name = QStringLiteral("Termux-1"),
++        .physicalSize = QSize(0, 0),
++        .capabilities = Capability::CustomModes,
++        .panelOrientation = OutputTransform::Kind::Normal,
++        .internal = true,
++    });
++
++    setState(State{
++        .scale = scale,
++        .modes = {std::make_shared<OutputMode>(OutputModeline(size, 60000, OutputModeline::Flag::Preferred))},
++        .currentMode = std::make_shared<OutputMode>(OutputModeline(size, 60000, OutputModeline::Flag::Preferred)),
++        .scaleSetting = scale,
++    });
++
++    m_renderLoop->setRefreshRate(60000);
++    m_vsyncMonitor->setRefreshRate(60000);
++    recreateBuffers(size);
++}
++
++void TranslatorOutput::setLayer(std::unique_ptr<TranslatorQPainterLayer> layer)
++{
++    m_layer = std::move(layer);
++}
++
++TranslatorOutput::~TranslatorOutput()
++{
++    m_layer.reset();
++    for (size_t i = 0; i < m_buffers.size(); ++i) {
++        if (m_bufferValid[i]) {
++            tgui_hardware_buffer_destroy(m_backend->connection(), &m_buffers[i]);
++            m_bufferValid[i] = false;
++        }
++    }
++}
++
++RenderLoop *TranslatorOutput::renderLoop() const
++{
++    return m_renderLoop.get();
++}
++
++bool TranslatorOutput::testPresentation(const std::shared_ptr<OutputFrame> &)
++{
++    return true;
++}
++
++int TranslatorOutput::findFreeBuffer() const
++{
++    for (size_t i = 0; i < m_buffers.size(); ++i) {
++        if (!m_bufferValid[i]) {
++            continue;
++        }
++        const auto inFlight = std::find_if(m_pending.begin(), m_pending.end(), [i](const PendingFrame &p) {
++            return p.buffer == static_cast<int>(i);
++        });
++        if (inFlight == m_pending.end()) {
++            return static_cast<int>(i);
++        }
++    }
++    return -1;
++}
++
++void TranslatorOutput::recreateBuffers(const QSize &size)
++{
++    for (size_t i = 0; i < m_buffers.size(); ++i) {
++        if (m_bufferValid[i]) {
++            tgui_hardware_buffer_destroy(m_backend->connection(), &m_buffers[i]);
++            m_bufferValid[i] = false;
++        }
++    }
++    m_pending.clear();
++
++    if (size.isEmpty()) {
++        return;
++    }
++
++    for (size_t i = 0; i < m_buffers.size(); ++i) {
++        tgui_err err = tgui_hardware_buffer_create(
++            m_backend->connection(), &m_buffers[i],
++            TGUI_HARDWARE_BUFFER_FORMAT_RGBX8888,
++            size.width(), size.height(),
++            TGUI_HARDWARE_BUFFER_CPU_NEVER,
++            TGUI_HARDWARE_BUFFER_CPU_OFTEN);
++        if (err != 0) {
++            qWarning() << "Failed to allocate Termux:GUI buffer" << i << err;
++            return;
++        }
++        m_bufferValid[i] = true;
++    }
++}
++
++void TranslatorOutput::setSurfaceSize(const QSize &size)
++{
++    if (size.isEmpty() || size == m_surfaceSize) {
++        return;
++    }
++
++    m_surfaceSize = size;
++    recreateBuffers(size);
++
++    const auto mode = std::make_shared<OutputMode>(OutputModeline(size, 60000, OutputModeline::Flag::Preferred));
++    setState(State{
++        .scale = m_scale,
++        .modes = {mode},
++        .currentMode = mode,
++        .scaleSetting = m_scale,
++    });
++    m_renderLoop->setRefreshRate(60000);
++    Q_EMIT changed();
++}
++
++bool TranslatorOutput::submit(const QImage &image, const std::shared_ptr<OutputFrame> &frame)
++{
++    const int index = findFreeBuffer();
++    if (index < 0) {
++        return false;
++    }
++
++    if (!__builtin_available(android 26, *)) {
++        return false;
++    }
++
++    AHardwareBuffer_Desc desc{};
++    AHardwareBuffer_describe(m_buffers[index].buffer, &desc);
++
++    void *mapped = nullptr;
++    const int rc = AHardwareBuffer_lock(
++        m_buffers[index].buffer,
++        AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
++        -1, nullptr, &mapped);
++    if (rc != 0 || !mapped) {
++        return false;
++    }
++
++    const int width = std::min<int>(image.width(), desc.width);
++    const int height = std::min<int>(image.height(), desc.height);
++    const uint32_t stride = desc.stride;
++    const uchar *src = image.constBits();
++    const int srcStride = image.bytesPerLine();
++    auto *dst = static_cast<uchar *>(mapped);
++
++    for (int y = 0; y < height; ++y) {
++        const uchar *srcRow = src + y * srcStride;
++        uchar *dstRow = dst + static_cast<size_t>(height - 1 - y) * stride * 4;
++        std::memcpy(dstRow, srcRow, static_cast<size_t>(width) * 4);
++    }
++
++    AHardwareBuffer_unlock(m_buffers[index].buffer, nullptr);
++
++    const tgui_err err = tgui_surface_view_set_buffer(
++        m_backend->connection(), m_backend->activity(),
++        m_backend->surfaceView(), &m_buffers[index]);
++    if (err != 0) {
++        return false;
++    }
++
++    m_pending.push_back(PendingFrame{index, frame});
++    return true;
++}
++
++bool TranslatorOutput::present(const QList<OutputLayer *> &, const std::shared_ptr<OutputFrame> &frame)
++{
++    if (!m_layer) {
++        return false;
++    }
++
++    if (!submit(*m_layer->image(), frame)) {
++        return false;
++    }
++
++    return true;
++}
++
++void TranslatorOutput::vblank(std::chrono::nanoseconds)
++{
++}
++
++void TranslatorOutput::applyChanges(const OutputConfiguration &config)
++{
++    auto props = config.constChangeSet(this);
++    if (!props) {
++        return;
++    }
++
++    Q_EMIT aboutToChange(props.get());
++    State next = m_state;
++    next.enabled = props->enabled.value_or(m_state.enabled);
++    next.transform = props->transform.value_or(m_state.transform);
++    next.position = props->pos.value_or(m_state.position);
++    next.scale = props->scale.value_or(m_state.scale);
++    next.scaleSetting = props->scaleSetting.value_or(m_state.scaleSetting);
++    next.uuid = props->uuid.value_or(m_state.uuid);
++    next.priority = props->priority.value_or(m_state.priority);
++    setState(next);
++    Q_EMIT changed();
++}
++
++} // namespace KWin
++
++#include "moc_translator_output.cpp"
+diff --git a/src/backends/translator/translator_output.h b/src/backends/translator/translator_output.h
+new file mode 100644
+index 0000000..276a644
+--- /dev/null
++++ b/src/backends/translator/translator_output.h
+@@ -0,0 +1,60 @@
++#pragma once
++
++#include "core/backendoutput.h"
++
++#include <QImage>
++#include <QSize>
++
++#include <array>
++#include <deque>
++#include <memory>
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class SoftwareVsyncMonitor;
++class OutputConfiguration;
++class TranslatorBackend;
++class TranslatorQPainterLayer;
++
++class TranslatorOutput : public BackendOutput
++{
++    Q_OBJECT
++public:
++    TranslatorOutput(TranslatorBackend *backend, const QSize &size, qreal scale);
++    ~TranslatorOutput() override;
++
++    RenderLoop *renderLoop() const override;
++    bool testPresentation(const std::shared_ptr<OutputFrame> &frame) override;
++    bool present(const QList<OutputLayer *> &layersToUpdate, const std::shared_ptr<OutputFrame> &frame) override;
++
++    void setSurfaceSize(const QSize &size);
++    TranslatorQPainterLayer *layer() const { return m_layer.get(); }
++    void setLayer(std::unique_ptr<TranslatorQPainterLayer> layer);
++    void applyChanges(const OutputConfiguration &config) override;
++
++private:
++    struct PendingFrame {
++        int buffer = -1;
++        std::shared_ptr<OutputFrame> frame;
++    };
++
++    void vblank(std::chrono::nanoseconds timestamp);
++    bool submit(const QImage &image, const std::shared_ptr<OutputFrame> &frame);
++    int findFreeBuffer() const;
++    void recreateBuffers(const QSize &size);
++
++    TranslatorBackend *m_backend;
++    std::unique_ptr<RenderLoop> m_renderLoop;
++    std::unique_ptr<SoftwareVsyncMonitor> m_vsyncMonitor;
++    std::unique_ptr<TranslatorQPainterLayer> m_layer;
++    std::array<tgui_hardware_buffer, 8> m_buffers{};
++    std::array<bool, 8> m_bufferValid{};
++    std::deque<PendingFrame> m_pending;
++    QSize m_surfaceSize;
++    qreal m_scale;
++};
++
++} // namespace KWin
+diff --git a/src/backends/translator/translator_qpainter_backend.cpp b/src/backends/translator/translator_qpainter_backend.cpp
+new file mode 100644
+index 0000000..0472cd4
+--- /dev/null
++++ b/src/backends/translator/translator_qpainter_backend.cpp
+@@ -0,0 +1,98 @@
++#include "translator_qpainter_backend.h"
++
++#include "core/graphicsbufferview.h"
++#include "core/shmgraphicsbufferallocator.h"
++#include "qpainter/qpainterswapchain.h"
++#include "translator_backend.h"
++#include "translator_output.h"
++
++#include <drm_fourcc.h>
++
++namespace KWin
++{
++
++TranslatorQPainterLayer::TranslatorQPainterLayer(BackendOutput *output, TranslatorQPainterBackend *backend)
++    : OutputLayer(output, OutputLayerType::Primary)
++    , m_backend(backend)
++{
++}
++
++TranslatorQPainterLayer::~TranslatorQPainterLayer() = default;
++
++std::optional<OutputLayerBeginFrameInfo> TranslatorQPainterLayer::doBeginFrame()
++{
++    const QSize size = m_output->modeSize();
++    if (!m_swapchain || m_swapchain->size() != size) {
++        m_swapchain = std::make_unique<QPainterSwapchain>(
++            m_backend->graphicsBufferAllocator(), size, DRM_FORMAT_XRGB8888);
++    }
++
++    m_current = m_swapchain->acquire();
++    if (!m_current) {
++        return std::nullopt;
++    }
++
++    m_renderTime = std::make_unique<CpuRenderTimeQuery>();
++    return OutputLayerBeginFrameInfo{
++        .renderTarget = RenderTarget(m_current->view()->image()),
++        .repaint = Region::infinite(),
++    };
++}
++
++bool TranslatorQPainterLayer::doEndFrame(const Region &, const Region &, OutputFrame *frame)
++{
++    if (m_renderTime) {
++        m_renderTime->end();
++        frame->addRenderTimeQuery(std::move(m_renderTime));
++    }
++    return true;
++}
++
++QImage *TranslatorQPainterLayer::image() const
++{
++    return m_current ? m_current->view()->image() : nullptr;
++}
++
++DrmDevice *TranslatorQPainterLayer::scanoutDevice() const
++{
++    return nullptr;
++}
++
++FormatModifierMap TranslatorQPainterLayer::supportedDrmFormats() const
++{
++    return {{DRM_FORMAT_XRGB8888, {DRM_FORMAT_MOD_LINEAR}}};
++}
++
++void TranslatorQPainterLayer::releaseBuffers()
++{
++    m_current.reset();
++    m_swapchain.reset();
++}
++
++TranslatorQPainterBackend::TranslatorQPainterBackend(TranslatorBackend *backend)
++    : m_backend(backend)
++    , m_allocator(std::make_unique<ShmGraphicsBufferAllocator>())
++{
++    for (BackendOutput *output : backend->outputs()) {
++        auto *translatorOutput = static_cast<TranslatorOutput *>(output);
++        translatorOutput->setObjectName(QStringLiteral("Termux:GUI output"));
++        translatorOutput->setLayer(std::make_unique<TranslatorQPainterLayer>(output, this));
++    }
++}
++
++TranslatorQPainterBackend::~TranslatorQPainterBackend() = default;
++
++GraphicsBufferAllocator *TranslatorQPainterBackend::graphicsBufferAllocator() const
++{
++    return m_allocator.get();
++}
++
++QList<OutputLayer *> TranslatorQPainterBackend::compatibleOutputLayers(BackendOutput *output)
++{
++    auto *translatorOutput = static_cast<TranslatorOutput *>(output);
++    return {translatorOutput->layer()};
++}
++
++} // namespace KWin
++
++#include "moc_translator_qpainter_backend.cpp"
+diff --git a/src/backends/translator/translator_qpainter_backend.h b/src/backends/translator/translator_qpainter_backend.h
+new file mode 100644
+index 0000000..37136c6
+--- /dev/null
++++ b/src/backends/translator/translator_qpainter_backend.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#include "core/renderbackend.h"
++#include "core/outputlayer.h"
++#include "qpainter/qpainterbackend.h"
++
++#include <memory>
++
++namespace KWin
++{
++
++class GraphicsBufferAllocator;
++class QPainterSwapchain;
++class QPainterSwapchainSlot;
++class TranslatorBackend;
++class TranslatorOutput;
++class TranslatorQPainterBackend;
++
++class TranslatorQPainterLayer : public OutputLayer
++{
++public:
++    TranslatorQPainterLayer(BackendOutput *output, TranslatorQPainterBackend *backend);
++    ~TranslatorQPainterLayer() override;
++
++    std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
++    bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
++    QImage *image() const;
++    DrmDevice *scanoutDevice() const override;
++    FormatModifierMap supportedDrmFormats() const override;
++    void releaseBuffers() override;
++
++private:
++    TranslatorQPainterBackend *m_backend;
++    std::unique_ptr<QPainterSwapchain> m_swapchain;
++    std::shared_ptr<QPainterSwapchainSlot> m_current;
++    std::unique_ptr<CpuRenderTimeQuery> m_renderTime;
++};
++
++class TranslatorQPainterBackend : public QPainterBackend
++{
++    Q_OBJECT
++public:
++    explicit TranslatorQPainterBackend(TranslatorBackend *backend);
++    ~TranslatorQPainterBackend() override;
++
++    GraphicsBufferAllocator *graphicsBufferAllocator() const;
++    QList<OutputLayer *> compatibleOutputLayers(BackendOutput *output) override;
++
++private:
++    TranslatorBackend *m_backend;
++    std::unique_ptr<GraphicsBufferAllocator> m_allocator;
++};
++
++} // namespace KWin
+diff --git a/src/config-kwin.h.cmake b/src/config-kwin.h.cmake
+index 3fc35eb..98800f5 100644
+--- a/src/config-kwin.h.cmake
++++ b/src/config-kwin.h.cmake
+@@ -38,0 +39 @@ constexpr QLatin1StringView XWAYLAND_SESSION_SCRIPTS("${XWAYLAND_SESSION_SCRIPTS
++#cmakedefine01 HAVE_TERMUX_GUI
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 81873b2..1dd0e3d 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -14,0 +15,3 @@
++#if HAVE_TERMUX_GUI
++#include "backends/translator/translator_backend.h"
++#endif
+@@ -337,0 +341 @@ int main(int argc, char *argv[])
++    QCommandLineOption translatorOption(QStringLiteral("translator"), i18n("Render through Termux:GUI."));
+@@ -398,0 +403 @@ int main(int argc, char *argv[])
++    parser.addOption(translatorOption);
+@@ -469,0 +475 @@ int main(int argc, char *argv[])
++        Translator,
+@@ -487,0 +494,2 @@ int main(int argc, char *argv[])
++    } else if (parser.isSet(translatorOption)) {
++        backendType = BackendType::Translator;
+@@ -577,0 +586,14 @@ int main(int argc, char *argv[])
++    case BackendType::Translator: {
++#if HAVE_TERMUX_GUI
++        auto outputBackend = std::make_unique<KWin::TranslatorBackend>(KWin::TranslatorBackend::Options{
++            .size = initialWindowSize,
++            .scale = outputScale,
++        });
++        a.setSession(KWin::Session::create(KWin::Session::Type::Noop));
++        a.setOutputBackend(std::move(outputBackend));
++        break;
++#else
++        std::cerr << "FATAL ERROR: Termux:GUI backend was not built" << std::endl;
++        return 1;
++#endif
++    }
