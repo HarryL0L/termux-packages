@@ -18,12 +18,13 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..05478cc
+index 0000000..9a8fa48
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,534 @@
+@@ -0,0 +1,600 @@
 +#include "termuxgui_backend.h"
 +
++#include "core/graphicsbufferview.h"
 +#include "core/outputconfiguration.h"
 +#include "core/shmgraphicsbufferallocator.h"
 +#include "qpainter/qpainterswapchain.h"
@@ -33,7 +34,7 @@ index 0000000..05478cc
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
-+#include <QThread>
++#include <QLibrary>
 +
 +#include <android/hardware_buffer.h>
 +#include <drm_fourcc.h>
@@ -44,6 +45,62 @@ index 0000000..05478cc
 +
 +namespace KWin
 +{
++
++namespace
++{
++
++class AndroidHardwareBufferApi
++{
++public:
++    using DescribeFn = void (*)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
++    using LockFn = int (*)(AHardwareBuffer *, uint64_t, int32_t, const ARect *, void **);
++    using UnlockFn = int (*)(AHardwareBuffer *, int32_t *);
++
++    bool ensureLoaded()
++    {
++        if (m_loaded) {
++            return m_describe && m_lock && m_unlock;
++        }
++        m_loaded = true;
++        if (!m_library.load()) {
++            return false;
++        }
++        m_describe = reinterpret_cast<DescribeFn>(m_library.resolve("AHardwareBuffer_describe"));
++        m_lock = reinterpret_cast<LockFn>(m_library.resolve("AHardwareBuffer_lock"));
++        m_unlock = reinterpret_cast<UnlockFn>(m_library.resolve("AHardwareBuffer_unlock"));
++        return m_describe && m_lock && m_unlock;
++    }
++
++    DescribeFn describe() const
++    {
++        return m_describe;
++    }
++
++    LockFn lock() const
++    {
++        return m_lock;
++    }
++
++    UnlockFn unlock() const
++    {
++        return m_unlock;
++    }
++
++private:
++    QLibrary m_library{QStringLiteral("libandroid.so")};
++    DescribeFn m_describe = nullptr;
++    LockFn m_lock = nullptr;
++    UnlockFn m_unlock = nullptr;
++    bool m_loaded = false;
++};
++
++AndroidHardwareBufferApi &androidHardwareBufferApi()
++{
++    static AndroidHardwareBufferApi api;
++    return api;
++}
++
++} // namespace
 +
 +TermuxGuiIntegration::TermuxGuiIntegration(QObject *parent)
 +    : QObject(parent)
@@ -363,8 +420,12 @@ index 0000000..05478cc
 +        }
 +    }
 +    if (!recreate) {
++        auto &api = androidHardwareBufferApi();
++        if (!api.ensureLoaded()) {
++            return false;
++        }
 +        AHardwareBuffer_Desc desc{};
-+        AHardwareBuffer_describe(m_buffers[0].hb.buffer, &desc);
++        api.describe()(m_buffers[0].hb.buffer, &desc);
 +        recreate = QSize(static_cast<int>(desc.width), static_cast<int>(desc.height)) != size;
 +    }
 +    if (!recreate) {
@@ -399,14 +460,19 @@ index 0000000..05478cc
 +        return false;
 +    }
 +
++    auto &api = androidHardwareBufferApi();
++    if (!api.ensureLoaded()) {
++        return false;
++    }
++
 +    AHardwareBuffer_Desc desc{};
-+    AHardwareBuffer_describe(buffer->hb.buffer, &desc);
++    api.describe()(buffer->hb.buffer, &desc);
 +    if (desc.width != static_cast<uint32_t>(image->width()) || desc.height != static_cast<uint32_t>(image->height())) {
 +        return false;
 +    }
 +
 +    void *mapped = nullptr;
-+    const int rc = AHardwareBuffer_lock(buffer->hb.buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &mapped);
++    const int rc = api.lock()(buffer->hb.buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &mapped);
 +    if (rc != 0 || !mapped) {
 +        return false;
 +    }
@@ -421,7 +487,7 @@ index 0000000..05478cc
 +                    rowBytes);
 +    }
 +
-+    AHardwareBuffer_unlock(buffer->hb.buffer, nullptr);
++    api.unlock()(buffer->hb.buffer, nullptr);
 +    return true;
 +}
 +
@@ -539,8 +605,8 @@ index 0000000..05478cc
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
 +        OutputConfiguration config;
 +        auto change = config.changeSet(virtualOutput);
-+        change->customModes = QList<CustomModeDefinition>{{size, virtualOutput->refreshRate(), OutputModeline::Flag::Custom | OutputModeline::Flag::Preferred}};
-+        change->currentMode = OutputModeline(size, virtualOutput->refreshRate(), OutputModeline::Flag::Custom | OutputModeline::Flag::Preferred);
++        change->customModes = QList<CustomModeDefinition>{{size, virtualOutput->refreshRate(), OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
++        change->currentMode = OutputModeline(size, virtualOutput->refreshRate(), OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
 +        change->pos = QPoint(0, 0);
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
@@ -558,7 +624,7 @@ index 0000000..05478cc
 +#include "moc_termuxgui_backend.cpp"
 diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
 new file mode 100644
-index 0000000..7042cf5
+index 0000000..83d93d5
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
 @@ -0,0 +1,181 @@
@@ -606,8 +672,6 @@ index 0000000..7042cf5
 +    uint32_t index;
 +    uint64_t time;
 +};
-+
-+Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 +
 +class TermuxGuiIntegration : public QObject
 +{
@@ -743,6 +807,8 @@ index 0000000..7042cf5
 +};
 +
 +} // namespace KWin
++
++Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
 index 739f326..13114d1 100644
 --- a/src/backends/virtual/virtual_backend.cpp
