@@ -891,7 +891,7 @@
  } // namespace KWin
 --- a/src/backends/virtual/virtual_output.cpp
 +++ b/src/backends/virtual/virtual_output.cpp
-@@ -99,6 +99,11 @@
+@@ -99,6 +99,13 @@
      next.replicationSource = props->replicationSource.value_or(m_state.replicationSource);
      next.priority = props->priority.value_or(m_state.priority);
      next.deviceOffset = props->deviceOffset.value_or(m_state.deviceOffset);
@@ -899,6 +899,8 @@
 +        next.position = QPoint(0, 0);
 +        next.transform = OutputTransform::Kind::Normal;
 +        next.manualTransform = OutputTransform::Kind::Normal;
++        next.scale = 1.0;
++        next.scaleSetting = 1.0;
 +    }
      if (props->customModes.has_value()) {
          next.customModes = *props->customModes;
