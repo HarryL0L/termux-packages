@@ -1,8 +1,6 @@
-diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
-index 9cf02b2..f19da48 100644
 --- a/src/backends/virtual/CMakeLists.txt
 +++ b/src/backends/virtual/CMakeLists.txt
-@@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
+@@ -5,3 +5,13 @@
      virtual_output.cpp
      virtual_qpainter_backend.cpp
  )
@@ -16,12 +14,9 @@ index 9cf02b2..f19da48 100644
 +    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
 +    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
 +endif()
-diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
-new file mode 100644
-index 0000000..9a8fa48
---- /dev/null
+--- a/src/backends/virtual/termuxgui_backend.cpp
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,605 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -481,8 +476,9 @@ index 0000000..9a8fa48
 +    const size_t rowBytes = static_cast<size_t>(image->width()) * 4;
 +    auto *dst = static_cast<unsigned char *>(mapped);
 +    const auto *src = image->constBits();
++    const size_t dstStride = static_cast<size_t>(desc.stride) * 4;
 +    for (int y = 0; y < image->height(); ++y) {
-+        std::memcpy(dst + static_cast<size_t>(image->height() - 1 - y) * desc.stride,
++        std::memcpy(dst + static_cast<size_t>(image->height() - 1 - y) * dstStride,
 +                    src + static_cast<size_t>(y) * srcStride,
 +                    rowBytes);
 +    }
@@ -531,6 +527,10 @@ index 0000000..9a8fa48
 +            m_integration->setBuffer(&buffer.hb);
 +        }
 +        m_currentBuffer = (m_currentBuffer + 1) % m_buffers.size();
++    }
++    if (m_current) {
++        m_swapchain->release(m_current);
++        m_current.reset();
 +    }
 +    return true;
 +}
@@ -622,10 +622,7 @@ index 0000000..9a8fa48
 +} // namespace KWin
 +
 +#include "moc_termuxgui_backend.cpp"
-diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
-new file mode 100644
-index 0000000..83d93d5
---- /dev/null
+--- a/src/backends/virtual/termuxgui_backend.h
 +++ b/src/backends/virtual/termuxgui_backend.h
 @@ -0,0 +1,181 @@
 +#pragma once
@@ -809,8 +806,6 @@ index 0000000..83d93d5
 +} // namespace KWin
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
-diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
-index 739f326..13114d1 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -823,7 +818,7 @@ index 739f326..13114d1 100644
  
  #include <fcntl.h>
  #include <gbm.h>
-@@ -89,9 +92,28 @@ VirtualBackend::~VirtualBackend()
+@@ -89,9 +92,28 @@
  
  bool VirtualBackend::initialize()
  {
@@ -852,7 +847,7 @@ index 739f326..13114d1 100644
  QList<CompositingType> VirtualBackend::supportedCompositors() const
  {
      QList<CompositingType> compositingTypes;
-@@ -109,6 +131,11 @@ DrmDevice *VirtualBackend::drmDevice() const
+@@ -109,6 +131,11 @@
  
  std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
  {
@@ -864,11 +859,9 @@ index 739f326..13114d1 100644
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
-diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
-index 596d0b8..f6e5b32 100644
 --- a/src/backends/virtual/virtual_backend.h
 +++ b/src/backends/virtual/virtual_backend.h
-@@ -17,6 +17,9 @@ namespace KWin
+@@ -17,6 +17,9 @@
  
  class VirtualBackend;
  class VirtualOutput;
@@ -878,7 +871,7 @@ index 596d0b8..f6e5b32 100644
  class DrmDevice;
  class RenderDevice;
  
-@@ -30,6 +33,7 @@ public:
+@@ -30,6 +33,7 @@
  
      bool initialize() override;
  
@@ -886,7 +879,7 @@ index 596d0b8..f6e5b32 100644
      std::unique_ptr<QPainterBackend> createQPainterBackend() override;
      std::unique_ptr<EglBackend> createOpenGLBackend() override;
  
-@@ -70,6 +74,9 @@ private:
+@@ -70,6 +74,9 @@
  
      QList<VirtualOutput *> m_outputs;
      std::unique_ptr<RenderDevice> m_renderDevice;
@@ -896,11 +889,9 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
-diff --git a/src/backends/virtual/virtual_output.cpp b/src/backends/virtual/virtual_output.cpp
-index 8c036fb..544796a 100644
 --- a/src/backends/virtual/virtual_output.cpp
 +++ b/src/backends/virtual/virtual_output.cpp
-@@ -99,6 +99,11 @@ void VirtualOutput::applyChanges(const OutputConfiguration &config)
+@@ -99,6 +99,11 @@
      next.replicationSource = props->replicationSource.value_or(m_state.replicationSource);
      next.priority = props->priority.value_or(m_state.priority);
      next.deviceOffset = props->deviceOffset.value_or(m_state.deviceOffset);
@@ -912,7 +903,7 @@ index 8c036fb..544796a 100644
      if (props->customModes.has_value()) {
          next.customModes = *props->customModes;
  
-@@ -150,6 +155,11 @@ void VirtualOutput::vblank(std::chrono::nanoseconds timestamp)
+@@ -150,6 +155,11 @@
      }
  }
  
@@ -924,11 +915,9 @@ index 8c036fb..544796a 100644
  void VirtualOutput::setOutputLayer(std::unique_ptr<OutputLayer> &&layer)
  {
      m_layer = std::move(layer);
-diff --git a/src/backends/virtual/virtual_output.h b/src/backends/virtual/virtual_output.h
-index 7085f98..0f24249 100644
 --- a/src/backends/virtual/virtual_output.h
 +++ b/src/backends/virtual/virtual_output.h
-@@ -36,6 +36,7 @@ public:
+@@ -36,6 +36,7 @@
      void applyChanges(const OutputConfiguration &config) override;
  
      void setOutputLayer(std::unique_ptr<OutputLayer> &&layer);
@@ -936,7 +925,7 @@ index 7085f98..0f24249 100644
      OutputLayer *outputLayer() const;
  
  private:
-@@ -51,6 +52,7 @@ private:
+@@ -51,6 +52,7 @@
      bool m_gammaResult = true;
      int m_identifier;
      std::shared_ptr<OutputFrame> m_frame;
