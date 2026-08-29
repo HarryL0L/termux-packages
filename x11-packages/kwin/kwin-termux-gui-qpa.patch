@@ -1,6 +1,5 @@
-diff -ruN ./src/backends/virtual/CMakeLists.txt /tmp/kwin_fixed/src/backends/virtual/CMakeLists.txt
---- ./src/backends/virtual/CMakeLists.txt	2026-08-04 09:21:52.000000000 +0000
-+++ /tmp/kwin_fixed/src/backends/virtual/CMakeLists.txt	2026-08-29 10:17:05.686082651 +0000
+--- a/src/backends/virtual/CMakeLists.txt
++++ b/src/backends/virtual/CMakeLists.txt
 @@ -5,3 +5,13 @@
      virtual_output.cpp
      virtual_qpainter_backend.cpp
@@ -15,10 +14,9 @@ diff -ruN ./src/backends/virtual/CMakeLists.txt /tmp/kwin_fixed/src/backends/vir
 +    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
 +    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
 +endif()
-diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.cpp
---- ./src/backends/virtual/termuxgui_backend.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.cpp	2026-08-29 10:17:15.728090285 +0000
-@@ -0,0 +1,890 @@
+--- a/src/backends/virtual/termuxgui_backend.cpp
++++ b/src/backends/virtual/termuxgui_backend.cpp
+@@ -0,0 +1,883 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -902,9 +900,8 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backe
 +} // namespace KWin
 +
 +#include "moc_termuxgui_backend.cpp"
-diff -ruN ./src/backends/virtual/termuxgui_backend.h /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.h
---- ./src/backends/virtual/termuxgui_backend.h	1970-01-01 00:00:00.000000000 +0000
-+++ /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.h	2026-08-29 10:17:05.686609580 +0000
+--- a/src/backends/virtual/termuxgui_backend.h
++++ b/src/backends/virtual/termuxgui_backend.h
 @@ -0,0 +1,204 @@
 +#pragma once
 +
@@ -1110,9 +1107,8 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.h /tmp/kwin_fixed/src/backend
 +} // namespace KWin
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
-diff -ruN ./src/backends/virtual/virtual_backend.cpp /tmp/kwin_fixed/src/backends/virtual/virtual_backend.cpp
---- ./src/backends/virtual/virtual_backend.cpp	2026-08-04 09:21:52.000000000 +0000
-+++ /tmp/kwin_fixed/src/backends/virtual/virtual_backend.cpp	2026-08-29 10:17:05.686813429 +0000
+--- a/src/backends/virtual/virtual_backend.cpp
++++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
  #include "virtual_egl_backend.h"
  #include "virtual_output.h"
@@ -1164,9 +1160,8 @@ diff -ruN ./src/backends/virtual/virtual_backend.cpp /tmp/kwin_fixed/src/backend
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
-diff -ruN ./src/backends/virtual/virtual_backend.h /tmp/kwin_fixed/src/backends/virtual/virtual_backend.h
---- ./src/backends/virtual/virtual_backend.h	2026-08-04 09:21:52.000000000 +0000
-+++ /tmp/kwin_fixed/src/backends/virtual/virtual_backend.h	2026-08-29 10:17:05.686907565 +0000
+--- a/src/backends/virtual/virtual_backend.h
++++ b/src/backends/virtual/virtual_backend.h
 @@ -17,6 +17,9 @@
  
  class VirtualBackend;
