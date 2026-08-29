@@ -1,6 +1,8 @@
+diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
+index 9cf02b2..f19da48 100644
 --- a/src/backends/virtual/CMakeLists.txt
 +++ b/src/backends/virtual/CMakeLists.txt
-@@ -5,3 +5,13 @@
+@@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
      virtual_output.cpp
      virtual_qpainter_backend.cpp
  )
@@ -14,9 +16,12 @@
 +    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
 +    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
 +endif()
---- a/src/backends/virtual/termuxgui_backend.cpp
+diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
+new file mode 100644
+index 0000000..48b0684
+--- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,883 @@
+@@ -0,0 +1,886 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -399,6 +404,9 @@
 +        return;
 +    }
 +    m_view = view;
++    const tgui_view_size matchParent{TGUI_VIEW_MATCH_PARENT, {}};
++    tgui_set_width(m_connection, m_activity, view, matchParent);
++    tgui_set_height(m_connection, m_activity, view, matchParent);
 +    tgui_set_clickable(m_connection, m_activity, view, true);
 +    tgui_send_touch_event(m_connection, m_activity, view, true);
 +    const float refreshRate = m_displayInfo.currentMode.refreshRate > 0 ? m_displayInfo.currentMode.refreshRate / 1000.0f : 60.0f;
@@ -900,7 +908,10 @@
 +} // namespace KWin
 +
 +#include "moc_termuxgui_backend.cpp"
---- a/src/backends/virtual/termuxgui_backend.h
+diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
+new file mode 100644
+index 0000000..b50b868
+--- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
 @@ -0,0 +1,204 @@
 +#pragma once
@@ -1107,6 +1118,8 @@
 +} // namespace KWin
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
+diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
+index 739f326..13114d1 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -1119,7 +1132,7 @@
  
  #include <fcntl.h>
  #include <gbm.h>
-@@ -89,9 +92,28 @@
+@@ -89,9 +92,28 @@ VirtualBackend::~VirtualBackend()
  
  bool VirtualBackend::initialize()
  {
@@ -1148,7 +1161,7 @@
  QList<CompositingType> VirtualBackend::supportedCompositors() const
  {
      QList<CompositingType> compositingTypes;
-@@ -109,6 +131,11 @@
+@@ -109,6 +131,11 @@ DrmDevice *VirtualBackend::drmDevice() const
  
  std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
  {
@@ -1160,9 +1173,11 @@
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
+diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
+index 596d0b8..f6e5b32 100644
 --- a/src/backends/virtual/virtual_backend.h
 +++ b/src/backends/virtual/virtual_backend.h
-@@ -17,6 +17,9 @@
+@@ -17,6 +17,9 @@ namespace KWin
  
  class VirtualBackend;
  class VirtualOutput;
@@ -1172,7 +1187,7 @@
  class DrmDevice;
  class RenderDevice;
  
-@@ -30,6 +33,7 @@
+@@ -30,6 +33,7 @@ public:
  
      bool initialize() override;
  
@@ -1180,7 +1195,7 @@
      std::unique_ptr<QPainterBackend> createQPainterBackend() override;
      std::unique_ptr<EglBackend> createOpenGLBackend() override;
  
-@@ -70,6 +74,9 @@
+@@ -70,6 +74,9 @@ private:
  
      QList<VirtualOutput *> m_outputs;
      std::unique_ptr<RenderDevice> m_renderDevice;
