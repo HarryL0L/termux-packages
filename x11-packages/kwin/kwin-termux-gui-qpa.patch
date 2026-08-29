@@ -1212,7 +1212,7 @@ index 1afe527..6368c53 100644
 +                } else if ((displayInfo.orientation == QStringLiteral("portrait")) && modeSize.width() > modeSize.height()) {
 +                    modeSize.transpose();
 +                }
-+                OutputModeline::Flags flags = OutputModeline::Flag::None;
++                OutputModeline::Flags flags{};
 +                if (mode.size == displayInfo.currentMode.size && mode.refreshRate == displayInfo.currentMode.refreshRate) {
 +                    flags |= OutputModeline::Flag::Preferred;
 +                }
