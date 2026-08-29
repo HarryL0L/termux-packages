@@ -1,6 +1,8 @@
+diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
+index 9cf02b2..f19da48 100644
 --- a/src/backends/virtual/CMakeLists.txt
 +++ b/src/backends/virtual/CMakeLists.txt
-@@ -5,3 +5,13 @@
+@@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
      virtual_output.cpp
      virtual_qpainter_backend.cpp
  )
@@ -14,9 +16,12 @@
 +    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
 +    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
 +endif()
---- a/src/backends/virtual/termuxgui_backend.cpp
+diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
+new file mode 100644
+index 0000000..80df694
+--- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,1083 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -29,6 +34,9 @@
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
 +#include <QLibrary>
 +
 +#include <android/hardware_buffer.h>
@@ -36,7 +44,17 @@
 +
 +#include <algorithm>
 +#include <chrono>
++#include <cmath>
 +#include <cstring>
++#include <ranges>
++
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <sys/wait.h>
++#include <unistd.h>
 +
 +namespace KWin
 +{
@@ -95,12 +113,291 @@
 +    return api;
 +}
 +
++bool readFull(int fd, void *buffer, size_t length)
++{
++    auto *ptr = static_cast<unsigned char *>(buffer);
++    while (length > 0) {
++        const ssize_t n = ::read(fd, ptr, length);
++        if (n > 0) {
++            ptr += n;
++            length -= static_cast<size_t>(n);
++        } else if (n < 0 && errno == EINTR) {
++            continue;
++        } else {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool writeFull(int fd, const void *buffer, size_t length)
++{
++    const auto *ptr = static_cast<const unsigned char *>(buffer);
++    while (length > 0) {
++        const ssize_t n = ::send(fd, ptr, length, MSG_NOSIGNAL);
++        if (n > 0) {
++            ptr += n;
++            length -= static_cast<size_t>(n);
++        } else if (n < 0 && errno == EINTR) {
++            continue;
++        } else {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool sendJson(int fd, const QByteArray &json)
++{
++    const uint32_t length = static_cast<uint32_t>(json.size());
++    const unsigned char header[4] = {
++        static_cast<unsigned char>(length >> 24),
++        static_cast<unsigned char>(length >> 16),
++        static_cast<unsigned char>(length >> 8),
++        static_cast<unsigned char>(length),
++    };
++    return writeFull(fd, header, sizeof(header)) && writeFull(fd, json.constData(), static_cast<size_t>(json.size()));
++}
++
++QByteArray receiveJson(int fd)
++{
++    unsigned char header[4];
++    if (!readFull(fd, header, sizeof(header))) {
++        return {};
++    }
++    const uint32_t length = (static_cast<uint32_t>(header[0]) << 24)
++        | (static_cast<uint32_t>(header[1]) << 16)
++        | (static_cast<uint32_t>(header[2]) << 8)
++        | static_cast<uint32_t>(header[3]);
++    if (length == 0 || length > 1024 * 1024) {
++        return {};
++    }
++    QByteArray json;
++    json.resize(static_cast<qsizetype>(length));
++    if (!readFull(fd, json.data(), length)) {
++        return {};
++    }
++    return json;
++}
++
++int createJsonServer(char *name, size_t nameSize)
++{
++    static constexpr char chars[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
++    if (nameSize < 2) {
++        return -1;
++    }
++
++    for (int attempt = 0; attempt < 32; ++attempt) {
++        uint32_t value = static_cast<uint32_t>(getpid()) ^ (static_cast<uint32_t>(getppid()) << 16) ^ static_cast<uint32_t>(attempt);
++        const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++        if (fd < 0) {
++            return -1;
++        }
++        for (size_t i = 0; i < nameSize - 1; ++i) {
++            value = value * 1103515245u + 12345u;
++            name[i] = chars[(value >> 16) % (sizeof(chars) - 1)];
++        }
++        name[nameSize - 1] = '\0';
++
++        sockaddr_un address{};
++        address.sun_family = AF_UNIX;
++        std::memcpy(address.sun_path + 1, name, nameSize - 1);
++        const socklen_t length = static_cast<socklen_t>(sizeof(address.sun_family) + 1 + nameSize - 1);
++        if (::bind(fd, reinterpret_cast<sockaddr *>(&address), length) == 0 && ::listen(fd, 1) == 0) {
++            return fd;
++        }
++        const int error = errno;
++        ::close(fd);
++        if (error != EADDRINUSE) {
++            errno = error;
++            return -1;
++        }
++    }
++    errno = EADDRINUSE;
++    return -1;
++}
++
++int acceptJsonConnection(int fd)
++{
++    pollfd p{.fd = fd, .events = POLLIN, .revents = 0};
++    if (::poll(&p, 1, 10000) <= 0) {
++        return -1;
++    }
++    return ::accept4(fd, nullptr, nullptr, SOCK_CLOEXEC);
++}
++
++bool broadcastJsonReceiver(const char *mainName, const char *eventName)
++{
++    const pid_t pid = ::fork();
++    if (pid < 0) {
++        return false;
++    }
++    if (pid == 0) {
++        const int nullFd = ::open("/dev/null", O_RDWR);
++        if (nullFd >= 0) {
++            ::dup2(nullFd, STDIN_FILENO);
++            ::dup2(nullFd, STDOUT_FILENO);
++            ::dup2(nullFd, STDERR_FILENO);
++            if (nullFd > STDERR_FILENO) {
++                ::close(nullFd);
++            }
++        }
++        ::execlp("am", "am", "broadcast", "--user", "0", "-n", "com.termux.gui/.GUIReceiver",
++                 "--es", "mainSocket", mainName, "--es", "eventSocket", eventName, static_cast<char *>(nullptr));
++        _exit(127);
++    }
++    int status = 0;
++    if (::waitpid(pid, &status, 0) < 0) {
++        return false;
++    }
++    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
++}
++
++bool parseDisplayInfo(const QByteArray &json, TermuxGuiDisplayInfo *info)
++{
++    if (!info) {
++        return false;
++    }
++    QJsonParseError error{};
++    const QJsonDocument document = QJsonDocument::fromJson(json, &error);
++    if (error.error != QJsonParseError::NoError || !document.isObject()) {
++        return false;
++    }
++    const QJsonObject object = document.object();
++    const QJsonObject current = object.value(QStringLiteral("current_mode")).toObject();
++    const int currentWidth = current.value(QStringLiteral("width")).toInt();
++    const int currentHeight = current.value(QStringLiteral("height")).toInt();
++    const double currentRate = current.value(QStringLiteral("refresh_rate")).toDouble();
++    if (currentWidth <= 0 || currentHeight <= 0 || currentRate <= 0.0) {
++        return false;
++    }
++
++    TermuxGuiDisplayInfo parsed;
++    parsed.currentMode = {
++        .size = QSize(currentWidth, currentHeight),
++        .refreshRate = static_cast<uint32_t>(std::llround(currentRate * 1000.0)),
++    };
++    parsed.density = std::max(0.01, object.value(QStringLiteral("density")).toDouble(1.0));
++    parsed.orientation = object.value(QStringLiteral("orientation")).toString();
++    parsed.hdrSupported = object.value(QStringLiteral("hdr_supported")).toBool(false);
++    for (const QJsonValue &value : object.value(QStringLiteral("hdr_types")).toArray()) {
++        parsed.hdrTypes.append(value.toInt());
++    }
++
++    for (const QJsonValue &value : object.value(QStringLiteral("supported_modes")).toArray()) {
++        const QJsonObject mode = value.toObject();
++        const QSize size(mode.value(QStringLiteral("width")).toInt(), mode.value(QStringLiteral("height")).toInt());
++        const double rate = mode.value(QStringLiteral("refresh_rate")).toDouble();
++        if (size.isEmpty() || rate <= 0.0) {
++            continue;
++        }
++        const TermuxGuiDisplayMode parsedMode{
++            .size = size,
++            .refreshRate = static_cast<uint32_t>(std::llround(rate * 1000.0)),
++        };
++        if (!parsed.supportedModes.contains(parsedMode)) {
++            parsed.supportedModes.append(parsedMode);
++        }
++    }
++    if (!parsed.supportedModes.contains(parsed.currentMode)) {
++        parsed.supportedModes.prepend(parsed.currentMode);
++    }
++    *info = parsed;
++    return true;
++}
++
++QSize orientedDisplaySize(QSize size, const QString &orientation)
++{
++    if (orientation == QLatin1String("landscape") && size.height() > size.width()) {
++        size.transpose();
++    } else if (orientation == QLatin1String("portrait") && size.width() > size.height()) {
++        size.transpose();
++    }
++    return size;
++}
++
++void applyDisplayInfoToOutput(VirtualOutput *output, const TermuxGuiDisplayInfo &info)
++{
++    if (!output || info.currentMode.size.isEmpty() || info.currentMode.refreshRate == 0) {
++        return;
++    }
++
++    const QSize currentSize = orientedDisplaySize(info.currentMode.size, info.orientation);
++    if (currentSize.isEmpty()) {
++        return;
++    }
++
++    QList<CustomModeDefinition> customModes;
++    for (const auto &mode : info.supportedModes) {
++        const QSize size = orientedDisplaySize(mode.size, info.orientation);
++        if (size.isEmpty() || mode.refreshRate == 0) {
++            continue;
++        }
++        OutputModeline::Flags flags(OutputModeline::Flag::Custom);
++        if (size == currentSize && mode.refreshRate == info.currentMode.refreshRate) {
++            flags |= OutputModeline::Flag::Preferred;
++        }
++        const CustomModeDefinition definition{
++            .size = size,
++            .refreshRate = mode.refreshRate,
++            .flags = flags,
++        };
++        const bool duplicate = std::ranges::any_of(customModes, [&definition](const CustomModeDefinition &other) {
++            return other.size == definition.size && other.refreshRate == definition.refreshRate;
++        });
++        if (!duplicate) {
++            customModes.append(definition);
++        }
++    }
++
++    if (customModes.isEmpty()) {
++        customModes.append(CustomModeDefinition{
++            .size = currentSize,
++            .refreshRate = info.currentMode.refreshRate,
++            .flags = OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred,
++        });
++    }
++
++    OutputConfiguration config;
++    auto change = config.changeSet(output);
++    change->customModes = customModes;
++    change->currentMode = OutputModeline(currentSize, info.currentMode.refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
++    change->scale = info.density;
++    change->scaleSetting = info.density;
++    change->pos = QPoint(0, 0);
++    change->transform = OutputTransform::Kind::Normal;
++    change->manualTransform = OutputTransform::Kind::Normal;
++    output->applyChanges(config);
++
++    qInfo() << "Termux:GUI display mode" << currentSize
++            << "@" << (info.currentMode.refreshRate / 1000.0) << "Hz"
++            << "scale" << info.density
++            << "orientation" << info.orientation
++            << "supported modes" << customModes.size()
++            << "HDR" << info.hdrSupported << info.hdrTypes;
++}
++
 +} // namespace
 +
 +TermuxGuiIntegration::TermuxGuiIntegration(QObject *parent)
 +    : QObject(parent)
 +{
 +    qRegisterMetaType<TermuxGuiTouchEvent>();
++
++    // The new display-mode fields are available through Termux:GUI's JSON
++    // protocol, not through the legacy C bindings. Query them before creating
++    // our real Activity so the temporary metadata Activity never competes for
++    // the foreground.
++    TermuxGuiDisplayInfo info;
++    if (!queryDisplayInfo(&info)) {
++        qWarning() << "Failed to query Termux:GUI display modes through the JSON protocol";
++        return;
++    }
++    {
++        QMutexLocker locker(&m_mutex);
++        m_displayInfo = info;
++        m_hasDisplayInfo = true;
++    }
 +
 +    if (tgui_connection_create(&m_connection) != TGUI_ERR_OK) {
 +        return;
@@ -159,6 +456,171 @@
 +    return m_surfaceSize;
 +}
 +
++bool TermuxGuiIntegration::hasDisplayInfo() const
++{
++    QMutexLocker locker(&m_mutex);
++    return m_hasDisplayInfo;
++}
++
++TermuxGuiDisplayInfo TermuxGuiIntegration::displayInfo() const
++{
++    QMutexLocker locker(&m_mutex);
++    return m_displayInfo;
++}
++
++bool TermuxGuiIntegration::queryDisplayInfo(TermuxGuiDisplayInfo *info) const
++{
++    char mainName[41];
++    char eventName[41];
++    const int mainServer = createJsonServer(mainName, sizeof(mainName));
++    const int eventServer = createJsonServer(eventName, sizeof(eventName));
++    if (mainServer < 0 || eventServer < 0) {
++        if (mainServer >= 0) {
++            ::close(mainServer);
++        }
++        if (eventServer >= 0) {
++            ::close(eventServer);
++        }
++        return false;
++    }
++    if (!broadcastJsonReceiver(mainName, eventName)) {
++        ::close(mainServer);
++        ::close(eventServer);
++        return false;
++    }
++
++    const int mainFd = acceptJsonConnection(mainServer);
++    const int eventFd = acceptJsonConnection(eventServer);
++    ::close(mainServer);
++    ::close(eventServer);
++    if (mainFd < 0 || eventFd < 0) {
++        if (mainFd >= 0) {
++            ::close(mainFd);
++        }
++        if (eventFd >= 0) {
++            ::close(eventFd);
++        }
++        return false;
++    }
++    ::close(eventFd);
++
++    constexpr unsigned char protocol = 0x01;
++    unsigned char responseProtocol = 0xff;
++    if (!writeFull(mainFd, &protocol, 1) || !readFull(mainFd, &responseProtocol, 1) || responseProtocol != 0) {
++        ::close(mainFd);
++        return false;
++    }
++
++    // V0Json keeps its Activity map per connection, so an Activity created by
++    // the C-binding connection cannot be queried from this JSON connection.
++    // Create a short-lived metadata Activity on this same JSON connection.
++    const QByteArray newActivityRequest = QByteArrayLiteral("{\"method\":\"newActivity\",\"params\":{\"dialog\":false}}" );
++    if (!sendJson(mainFd, newActivityRequest)) {
++        ::close(mainFd);
++        return false;
++    }
++    const QByteArray newActivityResponse = receiveJson(mainFd);
++    if (newActivityResponse.isEmpty()) {
++        ::close(mainFd);
++        return false;
++    }
++
++    QJsonParseError activityError{};
++    const QJsonDocument activityDocument = QJsonDocument::fromJson(newActivityResponse, &activityError);
++    int aid = -1;
++    if (activityError.error == QJsonParseError::NoError && activityDocument.isArray()) {
++        const QJsonArray array = activityDocument.array();
++        if (!array.isEmpty()) {
++            aid = array.at(0).toInt(-1);
++        }
++    }
++    if (aid < 0) {
++        ::close(mainFd);
++        return false;
++    }
++
++    const QByteArray request = QByteArrayLiteral("{\"method\":\"getConfiguration\",\"params\":{\"aid\":")
++        + QByteArray::number(aid) + QByteArrayLiteral("}}" );
++    if (!sendJson(mainFd, request)) {
++        ::close(mainFd);
++        return false;
++    }
++    const QByteArray response = receiveJson(mainFd);
++
++    const QByteArray finishRequest = QByteArrayLiteral("{\"method\":\"finishActivity\",\"params\":{\"aid\":")
++        + QByteArray::number(aid) + QByteArrayLiteral("}}" );
++    sendJson(mainFd, finishRequest);
++    ::close(mainFd);
++
++    if (response.isEmpty()) {
++        return false;
++    }
++    return parseDisplayInfo(response, info);
++}
++
++void TermuxGuiIntegration::configureOutputs(VirtualBackend *backend) const
++{
++    if (!backend) {
++        return;
++    }
++
++    TermuxGuiDisplayInfo info;
++    {
++        QMutexLocker locker(&m_mutex);
++        if (!m_hasDisplayInfo) {
++            qWarning() << "Termux:GUI did not provide display-mode information";
++            return;
++        }
++        info = m_displayInfo;
++    }
++
++    const QSize currentSize = orientedDisplaySize(info.currentMode.size, info.orientation);
++    if (currentSize.isEmpty() || info.density <= 0.0) {
++        qWarning() << "Invalid Termux:GUI display information" << currentSize << info.density;
++        return;
++    }
++
++    QList<OutputModeline> modes;
++    const OutputModeline currentModeline(currentSize, info.currentMode.refreshRate, OutputModeline::Flag::Preferred);
++    modes.append(currentModeline);
++    for (const auto &mode : info.supportedModes) {
++        const QSize size = orientedDisplaySize(mode.size, info.orientation);
++        if (size.isEmpty() || mode.refreshRate == 0) {
++            continue;
++        }
++        const OutputModeline modeline(size, mode.refreshRate);
++        if (!std::ranges::any_of(modes, [&modeline](const OutputModeline &other) {
++                return other.size() == modeline.size() && other.refreshRate() == modeline.refreshRate();
++            })) {
++            modes.append(modeline);
++        }
++    }
++
++    // VirtualOutput::init() stores mode sizes in physical pixels and scales
++    // them into logical geometry. Keep the physical display mode from JSON and
++    // only divide by density for the logical OutputInfo size.
++    const QSize logicalSize = (QSizeF(currentSize) / info.density).toSize();
++    QList<BackendOutput *> outputs = backend->outputs();
++    if (outputs.isEmpty()) {
++        auto *output = backend->addOutput(VirtualBackend::OutputInfo{
++            .size = logicalSize,
++            .scale = info.density,
++            .internal = true,
++            .modes = modes,
++            .panelOrientation = OutputTransform::Kind::Normal,
++            .connectorName = QStringLiteral("Termux:GUI-0"),
++        });
++        if (auto *virtualOutput = qobject_cast<VirtualOutput *>(output)) {
++            virtualOutput->setTermuxGuiOutput(true);
++        }
++        return;
++    }
++
++    if (auto *output = qobject_cast<VirtualOutput *>(outputs.front())) {
++        applyDisplayInfoToOutput(output, info);
++    }
++}
++
 +tgui_err TermuxGuiIntegration::createHardwareBuffer(tgui_hardware_buffer *buffer, uint32_t width, uint32_t height)
 +{
 +    return tgui_hardware_buffer_create(m_connection, buffer, TGUI_HARDWARE_BUFFER_FORMAT_RGBX8888, width, height, TGUI_HARDWARE_BUFFER_CPU_NEVER, TGUI_HARDWARE_BUFFER_CPU_OFTEN);
@@ -195,7 +657,14 @@
 +    m_view = view;
 +    tgui_set_clickable(m_connection, m_activity, view, true);
 +    tgui_send_touch_event(m_connection, m_activity, view, true);
-+    tgui_surface_view_config(m_connection, m_activity, view, 0xff000000u, TGUI_MISMATCH_STICK_TOPLEFT, TGUI_MISMATCH_STICK_TOPLEFT, 60.0f);
++    qreal refreshRate = 60.0;
++    {
++        QMutexLocker locker(&m_mutex);
++        if (m_hasDisplayInfo && m_displayInfo.currentMode.refreshRate > 0) {
++            refreshRate = m_displayInfo.currentMode.refreshRate / 1000.0;
++        }
++    }
++    tgui_surface_view_config(m_connection, m_activity, view, 0xff000000u, TGUI_MISMATCH_CENTER_AXIS, TGUI_MISMATCH_CENTER_AXIS, static_cast<float>(refreshRate));
 +    tgui_activity_configure_insets(m_connection, m_activity, TGUI_INSET_NONE, TGUI_INSET_BEHAVIOUR_TRANSIENT);
 +    m_view = view;
 +}
@@ -238,6 +707,31 @@
 +                }
 +            }
 +            Q_EMIT touchEvent(touch);
++        }
++        break;
++    case TGUI_EVENT_CONFIG:
++        if (event.activity == m_activity) {
++            QString orientation;
++            switch (event.configuration.orientation) {
++            case TGUI_ORIENTATION_LANDSCAPE:
++            case TGUI_ORIENTATION_REVERSE_LANDSCAPE:
++                orientation = QStringLiteral("landscape");
++                break;
++            case TGUI_ORIENTATION_PORTRAIT:
++            case TGUI_ORIENTATION_REVERSE_PORTRAIT:
++                orientation = QStringLiteral("portrait");
++                break;
++            default:
++                break;
++            }
++            if (!orientation.isEmpty()) {
++                QMutexLocker locker(&m_mutex);
++                if (m_hasDisplayInfo && m_displayInfo.orientation != orientation) {
++                    m_displayInfo.orientation = orientation;
++                    locker.unlock();
++                    Q_EMIT displayInfoChanged();
++                }
++            }
 +        }
 +        break;
 +    default:
@@ -493,6 +987,11 @@
 +    if (nativeSize.isEmpty()) {
 +        return std::nullopt;
 +    }
++    const QSize surfaceSize = m_integration->surfaceSize();
++    if (!surfaceSize.isEmpty() && surfaceSize != nativeSize) {
++        qWarning() << "Termux:GUI surface/output size mismatch:" << surfaceSize << nativeSize;
++        return std::nullopt;
++    }
 +    if (!m_swapchain || m_swapchain->size() != nativeSize) {
 +        m_swapchain = std::make_unique<QPainterSwapchain>(m_backend->graphicsBufferAllocator(), nativeSize, DRM_FORMAT_XRGB8888);
 +    }
@@ -559,16 +1058,13 @@
 +{
 +    qRegisterMetaType<QSize>();
 +    connect(m_backend, &VirtualBackend::outputAdded, this, &TermuxGuiQPainterBackend::addOutput);
-+    connect(m_integration, &TermuxGuiIntegration::surfaceSizeChanged, this, &TermuxGuiQPainterBackend::updateOutputSize, Qt::QueuedConnection);
++    connect(m_integration, &TermuxGuiIntegration::displayInfoChanged, this, &TermuxGuiQPainterBackend::updateDisplayInfo, Qt::QueuedConnection);
 +
 +    for (BackendOutput *output : m_backend->outputs()) {
 +        addOutput(output);
 +    }
 +
-+    const QSize size = m_integration->surfaceSize();
-+    if (!size.isEmpty()) {
-+        updateOutputSize(size);
-+    }
++    updateDisplayInfo();
 +}
 +
 +TermuxGuiQPainterBackend::~TermuxGuiQPainterBackend()
@@ -596,22 +1092,9 @@
 +    virtualOutput->setOutputLayer(std::make_unique<TermuxGuiQPainterLayer>(output, this));
 +}
 +
-+void TermuxGuiQPainterBackend::updateOutputSize(const QSize &size)
++void TermuxGuiQPainterBackend::updateDisplayInfo()
 +{
-+    if (size.isEmpty()) {
-+        return;
-+    }
-+    for (BackendOutput *output : m_backend->outputs()) {
-+        auto *virtualOutput = static_cast<VirtualOutput *>(output);
-+        OutputConfiguration config;
-+        auto change = config.changeSet(virtualOutput);
-+        change->customModes = QList<CustomModeDefinition>{{size, virtualOutput->refreshRate(), OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
-+        change->currentMode = OutputModeline(size, virtualOutput->refreshRate(), OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
-+        change->pos = QPoint(0, 0);
-+        change->transform = OutputTransform::Kind::Normal;
-+        change->manualTransform = OutputTransform::Kind::Normal;
-+        virtualOutput->applyChanges(config);
-+    }
++    m_integration->configureOutputs(m_backend);
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
@@ -622,9 +1105,12 @@
 +} // namespace KWin
 +
 +#include "moc_termuxgui_backend.cpp"
---- a/src/backends/virtual/termuxgui_backend.h
+diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
+new file mode 100644
+index 0000000..6e3a0cb
+--- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,210 @@
 +#pragma once
 +
 +#include "core/inputbackend.h"
@@ -634,10 +1120,14 @@
 +#include "qpainter/qpainterbackend.h"
 +
 +#include <QMutex>
++#include <QObject>
 +#include <QPoint>
 +#include <QSize>
++#include <QSizeF>
++#include <QString>
 +#include <QVector>
 +#include <QImage>
++#include <QList>
 +
 +#include <array>
 +#include <atomic>
@@ -670,6 +1160,24 @@
 +    uint64_t time;
 +};
 +
++struct TermuxGuiDisplayMode
++{
++    QSize size;
++    uint32_t refreshRate = 0;
++
++    bool operator==(const TermuxGuiDisplayMode &other) const = default;
++};
++
++struct TermuxGuiDisplayInfo
++{
++    TermuxGuiDisplayMode currentMode;
++    QList<TermuxGuiDisplayMode> supportedModes;
++    qreal density = 1.0;
++    QString orientation;
++    bool hdrSupported = false;
++    QList<int> hdrTypes;
++};
++
 +class TermuxGuiIntegration : public QObject
 +{
 +    Q_OBJECT
@@ -683,6 +1191,9 @@
 +    tgui_activity activity() const;
 +    tgui_view view() const;
 +    QSize surfaceSize() const;
++    bool hasDisplayInfo() const;
++    TermuxGuiDisplayInfo displayInfo() const;
++    void configureOutputs(VirtualBackend *backend) const;
 +
 +    tgui_err createHardwareBuffer(tgui_hardware_buffer *buffer, uint32_t width, uint32_t height);
 +    void destroyHardwareBuffer(tgui_hardware_buffer *buffer);
@@ -690,12 +1201,14 @@
 +
 +Q_SIGNALS:
 +    void surfaceSizeChanged(const QSize &size);
++    void displayInfoChanged();
 +    void touchEvent(const KWin::TermuxGuiTouchEvent &event);
 +
 +private:
 +    void run();
 +    void handleEvent(tgui_event &event);
 +    void createSurfaceView();
++    bool queryDisplayInfo(TermuxGuiDisplayInfo *info) const;
 +
 +    tgui_connection m_connection = nullptr;
 +    tgui_activity m_activity = -1;
@@ -704,6 +1217,8 @@
 +    std::thread m_thread;
 +    mutable QMutex m_mutex;
 +    QSize m_surfaceSize;
++    TermuxGuiDisplayInfo m_displayInfo;
++    bool m_hasDisplayInfo = false;
 +    bool m_valid = false;
 +};
 +
@@ -796,7 +1311,7 @@
 +
 +private:
 +    void addOutput(BackendOutput *output);
-+    void updateOutputSize(const QSize &size);
++    void updateDisplayInfo();
 +
 +    VirtualBackend *m_backend;
 +    TermuxGuiIntegration *m_integration;
@@ -806,6 +1321,8 @@
 +} // namespace KWin
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
+diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
+index 739f326..aa35d82 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -818,7 +1335,7 @@
  
  #include <fcntl.h>
  #include <gbm.h>
-@@ -89,9 +92,28 @@
+@@ -89,9 +92,29 @@ VirtualBackend::~VirtualBackend()
  
  bool VirtualBackend::initialize()
  {
@@ -829,6 +1346,7 @@
 +            m_termuxGui.reset();
 +            return false;
 +        }
++        m_termuxGui->configureOutputs(this);
 +    }
 +#endif
      return true;
@@ -847,7 +1365,7 @@
  QList<CompositingType> VirtualBackend::supportedCompositors() const
  {
      QList<CompositingType> compositingTypes;
-@@ -109,6 +131,11 @@
+@@ -109,6 +132,11 @@ DrmDevice *VirtualBackend::drmDevice() const
  
  std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
  {
@@ -859,9 +1377,11 @@
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
+diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
+index 596d0b8..f6e5b32 100644
 --- a/src/backends/virtual/virtual_backend.h
 +++ b/src/backends/virtual/virtual_backend.h
-@@ -17,6 +17,9 @@
+@@ -17,6 +17,9 @@ namespace KWin
  
  class VirtualBackend;
  class VirtualOutput;
@@ -871,7 +1391,7 @@
  class DrmDevice;
  class RenderDevice;
  
-@@ -30,6 +33,7 @@
+@@ -30,6 +33,7 @@ public:
  
      bool initialize() override;
  
@@ -879,7 +1399,7 @@
      std::unique_ptr<QPainterBackend> createQPainterBackend() override;
      std::unique_ptr<EglBackend> createOpenGLBackend() override;
  
-@@ -70,6 +74,9 @@
+@@ -70,6 +74,9 @@ private:
  
      QList<VirtualOutput *> m_outputs;
      std::unique_ptr<RenderDevice> m_renderDevice;
@@ -889,9 +1409,11 @@
  };
  
  } // namespace KWin
+diff --git a/src/backends/virtual/virtual_output.cpp b/src/backends/virtual/virtual_output.cpp
+index 8c036fb..544796a 100644
 --- a/src/backends/virtual/virtual_output.cpp
 +++ b/src/backends/virtual/virtual_output.cpp
-@@ -99,6 +99,13 @@
+@@ -99,6 +99,11 @@ void VirtualOutput::applyChanges(const OutputConfiguration &config)
      next.replicationSource = props->replicationSource.value_or(m_state.replicationSource);
      next.priority = props->priority.value_or(m_state.priority);
      next.deviceOffset = props->deviceOffset.value_or(m_state.deviceOffset);
@@ -899,13 +1421,11 @@
 +        next.position = QPoint(0, 0);
 +        next.transform = OutputTransform::Kind::Normal;
 +        next.manualTransform = OutputTransform::Kind::Normal;
-+        next.scale = 1.0;
-+        next.scaleSetting = 1.0;
 +    }
      if (props->customModes.has_value()) {
          next.customModes = *props->customModes;
  
-@@ -150,6 +155,11 @@
+@@ -150,6 +155,11 @@ void VirtualOutput::vblank(std::chrono::nanoseconds timestamp)
      }
  }
  
@@ -917,9 +1437,11 @@
  void VirtualOutput::setOutputLayer(std::unique_ptr<OutputLayer> &&layer)
  {
      m_layer = std::move(layer);
+diff --git a/src/backends/virtual/virtual_output.h b/src/backends/virtual/virtual_output.h
+index 7085f98..0f24249 100644
 --- a/src/backends/virtual/virtual_output.h
 +++ b/src/backends/virtual/virtual_output.h
-@@ -36,6 +36,7 @@
+@@ -36,6 +36,7 @@ public:
      void applyChanges(const OutputConfiguration &config) override;
  
      void setOutputLayer(std::unique_ptr<OutputLayer> &&layer);
@@ -927,7 +1449,7 @@
      OutputLayer *outputLayer() const;
  
  private:
-@@ -51,6 +52,7 @@
+@@ -51,6 +52,7 @@ private:
      bool m_gammaResult = true;
      int m_identifier;
      std::shared_ptr<OutputFrame> m_frame;
