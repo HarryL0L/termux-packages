@@ -102,6 +102,7 @@ index 0000000..d0264c5
 +    return api;
 +}
 +
++} // namespace
 +
 +TermuxGuiIntegration::TermuxGuiIntegration(QObject *parent)
 +    : QObject(parent)
