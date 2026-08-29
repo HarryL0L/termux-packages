@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..d0264c5
+index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,623 @@
+@@ -0,0 +1,622 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -644,8 +644,6 @@ index 0000000..d0264c5
 +}
 +
 +} // namespace KWin
-+
-+#include "moc_termuxgui_backend.cpp"
 diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
 new file mode 100644
 index 0000000..c0bf732
@@ -838,7 +836,7 @@ index 0000000..c0bf732
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
-index 739f326..93768a8 100644
+index 739f326..669d9a0 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -851,14 +849,32 @@ index 739f326..93768a8 100644
  
  #include <fcntl.h>
  #include <gbm.h>
-@@ -89,9 +92,28 @@ VirtualBackend::~VirtualBackend()
+@@ -78,6 +81,18 @@ VirtualBackend::VirtualBackend(QObject *parent)
+     : OutputBackend(parent)
+     , m_renderDevice(findRenderDevice())
+ {
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (qEnvironmentVariableIsSet("KWIN_TERMUX_GUI") || qEnvironmentVariableIsSet("TERMUX_VERSION")) {
++        // kwin_wayland creates the initial virtual output before calling
++        // OutputBackend::initialize(). Create the Termux:GUI surface here so
++        // addOutput() can use the real surface size instead of the virtual
++        // backend's 1024x768 default.
++        m_termuxGui = std::make_unique<TermuxGuiIntegration>(this);
++        if (m_termuxGui->isValid()) {
++            m_termuxGui->waitForSurfaceSize(5000);
++        }
++    }
++#endif
+ }
+ 
+ VirtualBackend::~VirtualBackend()
+@@ -89,9 +104,27 @@ VirtualBackend::~VirtualBackend()
  
  bool VirtualBackend::initialize()
  {
 +#ifdef KWIN_BUILD_TERMUXGUI
-+    if (qEnvironmentVariableIsSet("KWIN_TERMUX_GUI") || qEnvironmentVariableIsSet("TERMUX_VERSION")) {
-+        m_termuxGui = std::make_unique<TermuxGuiIntegration>(this);
-+        if (!m_termuxGui->isValid() || !m_termuxGui->waitForSurfaceSize(5000)) {
++    if (m_termuxGui) {
++        if (!m_termuxGui->isValid() || m_termuxGui->surfaceSize().isEmpty()) {
 +            m_termuxGui.reset();
 +            return false;
 +        }
@@ -880,7 +896,7 @@ index 739f326..93768a8 100644
  QList<CompositingType> VirtualBackend::supportedCompositors() const
  {
      QList<CompositingType> compositingTypes;
-@@ -109,6 +131,11 @@ DrmDevice *VirtualBackend::drmDevice() const
+@@ -109,6 +142,11 @@ DrmDevice *VirtualBackend::drmDevice() const
  
  std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
  {
@@ -892,7 +908,7 @@ index 739f326..93768a8 100644
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
-@@ -149,7 +176,13 @@ VirtualOutput *VirtualBackend::createOutput(const OutputInfo &info)
+@@ -149,7 +187,13 @@ VirtualOutput *VirtualBackend::createOutput(const OutputInfo &info)
  
  BackendOutput *VirtualBackend::addOutput(const OutputInfo &info)
  {
