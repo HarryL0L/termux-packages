@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..48b0684
+index 0000000..7696cb9
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,886 @@
+@@ -0,0 +1,896 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -404,9 +404,6 @@ index 0000000..48b0684
 +        return;
 +    }
 +    m_view = view;
-+    const tgui_view_size matchParent{TGUI_VIEW_MATCH_PARENT, {}};
-+    tgui_set_width(m_connection, m_activity, view, matchParent);
-+    tgui_set_height(m_connection, m_activity, view, matchParent);
 +    tgui_set_clickable(m_connection, m_activity, view, true);
 +    tgui_send_touch_event(m_connection, m_activity, view, true);
 +    const float refreshRate = m_displayInfo.currentMode.refreshRate > 0 ? m_displayInfo.currentMode.refreshRate / 1000.0f : 60.0f;
@@ -873,15 +870,28 @@ index 0000000..48b0684
 +        OutputConfiguration config;
 +        auto change = config.changeSet(virtualOutput);
 +
++        const bool landscape = size.width() > size.height();
++        const bool currentModeLandscape = info.currentMode.size.width() > info.currentMode.size.height();
++        const bool transpose = landscape != currentModeLandscape;
++
++        QSize currentModeSize = info.currentMode.size;
++        if (transpose) {
++            currentModeSize.transpose();
++        }
++
 +        QList<CustomModeDefinition> customModes;
 +        std::optional<TermuxGuiDisplayMode> current;
 +        for (const TermuxGuiDisplayMode &mode : modes) {
++            QSize modeSize = mode.size;
++            if (transpose) {
++                modeSize.transpose();
++            }
 +            OutputModeline::Flags flags = OutputModeline::Flag::Custom;
 +            if (mode.size == info.currentMode.size && mode.refreshRate == info.currentMode.refreshRate) {
 +                flags |= OutputModeline::Flag::Preferred;
-+                current = TermuxGuiDisplayMode{size, mode.refreshRate};
++                current = TermuxGuiDisplayMode{currentModeSize, mode.refreshRate};
 +            }
-+            customModes.append({size, mode.refreshRate, flags});
++            customModes.append({modeSize, mode.refreshRate, flags});
 +        }
 +
 +        if (!current) {
