@@ -1,11 +1,8 @@
 --- a/startkde/plasma-session/startup.cpp
 +++ b/startkde/plasma-session/startup.cpp
 @@ -159,7 +159,7 @@ void Startup::startKWin()
-     }
- 
-     if (wayland) {
+         // This must block until started as it sets the WAYLAND_DISPLAY/DISPLAY env variables needed for the rest of the boot
+         // fortunately it's very fast as it's just starting a wrapper
 -        StartServiceJob kwinWaylandJob(QStringLiteral("kwin_wayland_wrapper"), {QStringLiteral("--xwayland")}, QStringLiteral("org.kde.KWinWrapper"));
 +        StartServiceJob kwinWaylandJob(QStringLiteral("kwin_wayland_wrapper"), {QStringLiteral("--xwayland"), QStringLiteral("--virtual")}, QStringLiteral("org.kde.KWinWrapper"));
          kwinWaylandJob.exec();
-     } else {
-         StartServiceJob kwinX11Job(QStringLiteral("kwin_x11"), {}, QStringLiteral("org.kde.KWinWrapper"));
