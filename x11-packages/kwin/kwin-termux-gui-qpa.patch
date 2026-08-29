@@ -369,7 +369,7 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backe
 +
 +tgui_err TermuxGuiIntegration::createHardwareBuffer(tgui_hardware_buffer *buffer, uint32_t width, uint32_t height)
 +{
-+    return tgui_hardware_buffer_create(m_connection, buffer, TGUI_HARDWARE_BUFFER_FORMAT_RGBX8888, width, height, TGUI_HARDWARE_BUFFER_CPU_NEVER, TGUI_HARDWARE_BUFFER_CPU_OFTEN);
++    return tgui_hardware_buffer_create(m_connection, buffer, TGUI_HARDWARE_BUFFER_FORMAT_RGBA8888, width, height, TGUI_HARDWARE_BUFFER_CPU_NEVER, TGUI_HARDWARE_BUFFER_CPU_OFTEN);
 +}
 +
 +void TermuxGuiIntegration::destroyHardwareBuffer(tgui_hardware_buffer *buffer)
@@ -724,14 +724,18 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backe
 +    }
 +
 +    const size_t srcStride = static_cast<size_t>(image->bytesPerLine());
-+    const size_t rowBytes = static_cast<size_t>(image->width()) * 4;
 +    auto *dst = static_cast<unsigned char *>(mapped);
 +    const auto *src = image->constBits();
 +    const size_t dstStride = static_cast<size_t>(desc.stride) * 4;
 +    for (int y = 0; y < image->height(); ++y) {
-+        std::memcpy(dst + static_cast<size_t>(image->height() - 1 - y) * dstStride,
-+                    src + static_cast<size_t>(y) * srcStride,
-+                    rowBytes);
++        const auto *srcRow = src + static_cast<size_t>(y) * srcStride;
++        auto *dstRow = dst + static_cast<size_t>(image->height() - 1 - y) * dstStride;
++        for (int x = 0; x < image->width(); ++x) {
++            dstRow[x * 4 + 0] = srcRow[x * 4 + 2];
++            dstRow[x * 4 + 1] = srcRow[x * 4 + 1];
++            dstRow[x * 4 + 2] = srcRow[x * 4 + 0];
++            dstRow[x * 4 + 3] = 0xff;
++        }
 +    }
 +
 +    api.unlock()(buffer->hb.buffer, nullptr);
@@ -858,16 +862,6 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backe
 +        modes.append({size, 60000u});
 +    }
 +
-+    auto orientMode = [&size](const TermuxGuiDisplayMode &mode) {
-+        if (mode.size == size) {
-+            return mode.size;
-+        }
-+        if (mode.size.transposed() == size) {
-+            return mode.size.transposed();
-+        }
-+        return mode.size;
-+    };
-+
 +    for (BackendOutput *output : m_backend->outputs()) {
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
 +        OutputConfiguration config;
@@ -876,13 +870,12 @@ diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backe
 +        QList<CustomModeDefinition> customModes;
 +        std::optional<TermuxGuiDisplayMode> current;
 +        for (const TermuxGuiDisplayMode &mode : modes) {
-+            const QSize modeSize = orientMode(mode);
 +            OutputModeline::Flags flags = OutputModeline::Flag::Custom;
 +            if (mode.size == info.currentMode.size && mode.refreshRate == info.currentMode.refreshRate) {
 +                flags |= OutputModeline::Flag::Preferred;
-+                current = mode;
++                current = TermuxGuiDisplayMode{size, mode.refreshRate};
 +            }
-+            customModes.append({modeSize, mode.refreshRate, flags});
++            customModes.append({size, mode.refreshRate, flags});
 +        }
 +
 +        if (!current) {
