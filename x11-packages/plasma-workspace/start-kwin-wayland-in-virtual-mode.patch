@@ -1,0 +1,11 @@
+--- a/startkde/plasma-session/startup.cpp
++++ b/startkde/plasma-session/startup.cpp
+@@ -159,7 +159,7 @@ void Startup::startKWin()
+     }
+ 
+     if (wayland) {
+-        StartServiceJob kwinWaylandJob(QStringLiteral("kwin_wayland_wrapper"), {QStringLiteral("--xwayland")}, QStringLiteral("org.kde.KWinWrapper"));
++        StartServiceJob kwinWaylandJob(QStringLiteral("kwin_wayland_wrapper"), {QStringLiteral("--xwayland"), QStringLiteral("--virtual")}, QStringLiteral("org.kde.KWinWrapper"));
+         kwinWaylandJob.exec();
+     } else {
+         StartServiceJob kwinX11Job(QStringLiteral("kwin_x11"), {}, QStringLiteral("org.kde.KWinWrapper"));
