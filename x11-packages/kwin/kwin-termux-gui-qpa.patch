@@ -1,8 +1,7 @@
-diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
-index 9cf02b2..f19da48 100644
---- a/src/backends/virtual/CMakeLists.txt
-+++ b/src/backends/virtual/CMakeLists.txt
-@@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
+diff -ruN ./src/backends/virtual/CMakeLists.txt /tmp/kwin_fixed/src/backends/virtual/CMakeLists.txt
+--- ./src/backends/virtual/CMakeLists.txt	2026-08-04 09:21:52.000000000 +0000
++++ /tmp/kwin_fixed/src/backends/virtual/CMakeLists.txt	2026-08-29 10:17:05.686082651 +0000
+@@ -5,3 +5,13 @@
      virtual_output.cpp
      virtual_qpainter_backend.cpp
  )
@@ -16,12 +15,10 @@ index 9cf02b2..f19da48 100644
 +    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
 +    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
 +endif()
-diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
-new file mode 100644
-index 0000000..a632f1e
---- /dev/null
-+++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,866 @@
+diff -ruN ./src/backends/virtual/termuxgui_backend.cpp /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.cpp
+--- ./src/backends/virtual/termuxgui_backend.cpp	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.cpp	2026-08-29 10:17:15.728090285 +0000
+@@ -0,0 +1,890 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -52,6 +49,7 @@ index 0000000..a632f1e
 +#include <algorithm>
 +#include <chrono>
 +#include <cstring>
++#include <optional>
 +
 +namespace KWin
 +{
@@ -893,7 +891,7 @@ index 0000000..a632f1e
 +        }
 +
 +        change->customModes = customModes;
-+        change->currentMode = OutputModeline(orientMode(*current), current->refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
++        change->currentMode = OutputModeline(current->size, current->refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
 +        change->scale = info.density > 0 ? info.density : 1.0;
 +        change->scaleSetting = change->scale;
 +        change->pos = QPoint(0, 0);
@@ -911,11 +909,9 @@ index 0000000..a632f1e
 +} // namespace KWin
 +
 +#include "moc_termuxgui_backend.cpp"
-diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
-new file mode 100644
-index 0000000..b50b868
---- /dev/null
-+++ b/src/backends/virtual/termuxgui_backend.h
+diff -ruN ./src/backends/virtual/termuxgui_backend.h /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.h
+--- ./src/backends/virtual/termuxgui_backend.h	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/kwin_fixed/src/backends/virtual/termuxgui_backend.h	2026-08-29 10:17:05.686609580 +0000
 @@ -0,0 +1,204 @@
 +#pragma once
 +
@@ -1121,10 +1117,9 @@ index 0000000..b50b868
 +} // namespace KWin
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
-diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
-index 739f326..13114d1 100644
---- a/src/backends/virtual/virtual_backend.cpp
-+++ b/src/backends/virtual/virtual_backend.cpp
+diff -ruN ./src/backends/virtual/virtual_backend.cpp /tmp/kwin_fixed/src/backends/virtual/virtual_backend.cpp
+--- ./src/backends/virtual/virtual_backend.cpp	2026-08-04 09:21:52.000000000 +0000
++++ /tmp/kwin_fixed/src/backends/virtual/virtual_backend.cpp	2026-08-29 10:17:05.686813429 +0000
 @@ -14,6 +14,9 @@
  #include "virtual_egl_backend.h"
  #include "virtual_output.h"
@@ -1135,7 +1130,7 @@ index 739f326..13114d1 100644
  
  #include <fcntl.h>
  #include <gbm.h>
-@@ -89,9 +92,28 @@ VirtualBackend::~VirtualBackend()
+@@ -89,9 +92,28 @@
  
  bool VirtualBackend::initialize()
  {
@@ -1164,7 +1159,7 @@ index 739f326..13114d1 100644
  QList<CompositingType> VirtualBackend::supportedCompositors() const
  {
      QList<CompositingType> compositingTypes;
-@@ -109,6 +131,11 @@ DrmDevice *VirtualBackend::drmDevice() const
+@@ -109,6 +131,11 @@
  
  std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
  {
@@ -1176,11 +1171,10 @@ index 739f326..13114d1 100644
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
-diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
-index 596d0b8..f6e5b32 100644
---- a/src/backends/virtual/virtual_backend.h
-+++ b/src/backends/virtual/virtual_backend.h
-@@ -17,6 +17,9 @@ namespace KWin
+diff -ruN ./src/backends/virtual/virtual_backend.h /tmp/kwin_fixed/src/backends/virtual/virtual_backend.h
+--- ./src/backends/virtual/virtual_backend.h	2026-08-04 09:21:52.000000000 +0000
++++ /tmp/kwin_fixed/src/backends/virtual/virtual_backend.h	2026-08-29 10:17:05.686907565 +0000
+@@ -17,6 +17,9 @@
  
  class VirtualBackend;
  class VirtualOutput;
@@ -1190,7 +1184,7 @@ index 596d0b8..f6e5b32 100644
  class DrmDevice;
  class RenderDevice;
  
-@@ -30,6 +33,7 @@ public:
+@@ -30,6 +33,7 @@
  
      bool initialize() override;
  
@@ -1198,7 +1192,7 @@ index 596d0b8..f6e5b32 100644
      std::unique_ptr<QPainterBackend> createQPainterBackend() override;
      std::unique_ptr<EglBackend> createOpenGLBackend() override;
  
-@@ -70,6 +74,9 @@ private:
+@@ -70,6 +74,9 @@
  
      QList<VirtualOutput *> m_outputs;
      std::unique_ptr<RenderDevice> m_renderDevice;
