@@ -46,6 +46,8 @@ index 0000000..a632f1e
 +#include <drm_fourcc.h>
 +#include <sys/socket.h>
 +#include <sys/un.h>
++#include <poll.h>
++#include <unistd.h>
 +
 +#include <algorithm>
 +#include <chrono>
@@ -129,11 +131,11 @@ index 0000000..a632f1e
 +{
 +    auto *ptr = static_cast<uint8_t *>(data);
 +    while (size) {
-+        const ssize_t read = ::read(fd, ptr, size);
-+        if (read > 0) {
-+            ptr += read;
-+            size -= static_cast<size_t>(read);
-+        } else if (read < 0 && errno == EINTR) {
++        const ssize_t bytesRead = ::read(fd, ptr, size);
++        if (bytesRead > 0) {
++            ptr += bytesRead;
++            size -= static_cast<size_t>(bytesRead);
++        } else if (bytesRead < 0 && errno == EINTR) {
 +            continue;
 +        } else {
 +            return false;
@@ -198,7 +200,7 @@ index 0000000..a632f1e
 +    return -1;
 +}
 +
-+QByteArray termuxGuiConfiguration(int aid)
++QByteArray termuxGuiConfiguration()
 +{
 +    QString mainName;
 +    QString eventName;
@@ -266,12 +268,33 @@ index 0000000..a632f1e
 +        return {};
 +    }
 +
++    const QByteArray createRequest = QByteArrayLiteral("{\"method\":\"newActivity\",\"params\":{\"dialog\":false}}");
++    if (!sendJson(mainFd, createRequest)) {
++        close(mainFd);
++        return {};
++    }
++    const QByteArray createResponse = receiveJson(mainFd);
++    if (createResponse.isEmpty()) {
++        close(mainFd);
++        return {};
++    }
++
++    bool ok = false;
++    const int aid = QString::fromUtf8(createResponse).trimmed().toInt(&ok);
++    if (!ok || aid < 0) {
++        close(mainFd);
++        return {};
++    }
++
 +    const QByteArray request = QByteArrayLiteral("{\"method\":\"getConfiguration\",\"params\":{\"aid\":") + QByteArray::number(aid) + QByteArrayLiteral("}}");
 +    if (!sendJson(mainFd, request)) {
 +        close(mainFd);
 +        return {};
 +    }
 +    const QByteArray response = receiveJson(mainFd);
++
++    const QByteArray finishRequest = QByteArrayLiteral("{\"method\":\"finishActivity\",\"params\":{\"aid\":") + QByteArray::number(aid) + QByteArrayLiteral("}}");
++    sendJson(mainFd, finishRequest);
 +    close(mainFd);
 +    return response;
 +}
@@ -390,7 +413,7 @@ index 0000000..a632f1e
 +
 +bool TermuxGuiIntegration::queryDisplayInfo()
 +{
-+    const QByteArray response = termuxGuiConfiguration(m_activity);
++    const QByteArray response = termuxGuiConfiguration();
 +    if (response.isEmpty()) {
 +        return false;
 +    }
