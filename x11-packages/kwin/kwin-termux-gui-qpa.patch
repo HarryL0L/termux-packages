@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..7696cb9
+index 0000000..5e08515
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,896 @@
+@@ -0,0 +1,897 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -320,6 +320,11 @@ index 0000000..7696cb9
 +        m_connection = nullptr;
 +        return;
 +    }
++    if (!queryDisplayInfo()) {
++        tgui_connection_destroy(m_connection);
++        m_connection = nullptr;
++        return;
++    }
 +
 +    m_valid = true;
 +    m_running = true;
@@ -428,6 +433,7 @@ index 0000000..7696cb9
 +    TermuxGuiDisplayInfo info;
 +    info.density = object.value(QStringLiteral("density")).toDouble(1.0);
 +    info.hdrSupported = object.value(QStringLiteral("hdr_supported")).toBool(false);
++    info.orientation = object.value(QStringLiteral("orientation")).toString();
 +
 +    const QJsonObject current = object.value(QStringLiteral("current_mode")).toObject();
 +    info.currentMode.size = QSize(current.value(QStringLiteral("width")).toInt(), current.value(QStringLiteral("height")).toInt());
@@ -862,22 +868,17 @@ index 0000000..7696cb9
 +    const TermuxGuiDisplayInfo info = m_integration->displayInfo();
 +    QList<TermuxGuiDisplayMode> modes = info.modes;
 +    if (modes.isEmpty()) {
-+        modes.append({size, 60000u});
++        modes.append({info.currentMode.size.isEmpty() ? size : info.currentMode.size, info.currentMode.refreshRate ? info.currentMode.refreshRate : 60000u});
 +    }
++
++    const bool landscape = size.width() > size.height();
++    const bool currentModeLandscape = info.currentMode.size.width() > info.currentMode.size.height();
++    const bool transpose = landscape != currentModeLandscape;
 +
 +    for (BackendOutput *output : m_backend->outputs()) {
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
 +        OutputConfiguration config;
 +        auto change = config.changeSet(virtualOutput);
-+
-+        const bool landscape = size.width() > size.height();
-+        const bool currentModeLandscape = info.currentMode.size.width() > info.currentMode.size.height();
-+        const bool transpose = landscape != currentModeLandscape;
-+
-+        QSize currentModeSize = info.currentMode.size;
-+        if (transpose) {
-+            currentModeSize.transpose();
-+        }
 +
 +        QList<CustomModeDefinition> customModes;
 +        std::optional<TermuxGuiDisplayMode> current;
@@ -889,7 +890,7 @@ index 0000000..7696cb9
 +            OutputModeline::Flags flags = OutputModeline::Flag::Custom;
 +            if (mode.size == info.currentMode.size && mode.refreshRate == info.currentMode.refreshRate) {
 +                flags |= OutputModeline::Flag::Preferred;
-+                current = TermuxGuiDisplayMode{currentModeSize, mode.refreshRate};
++                current = TermuxGuiDisplayMode{modeSize, mode.refreshRate};
 +            }
 +            customModes.append({modeSize, mode.refreshRate, flags});
 +        }
@@ -920,10 +921,10 @@ index 0000000..7696cb9
 +#include "moc_termuxgui_backend.cpp"
 diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
 new file mode 100644
-index 0000000..b50b868
+index 0000000..e389679
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,205 @@
 +#pragma once
 +
 +#include "core/inputbackend.h"
@@ -979,6 +980,7 @@ index 0000000..b50b868
 +    QList<TermuxGuiDisplayMode> modes;
 +    qreal density = 1.0;
 +    bool hdrSupported = false;
++    QString orientation;
 +};
 +
 +struct TermuxGuiTouchEvent
@@ -1129,7 +1131,7 @@ index 0000000..b50b868
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
-index 739f326..13114d1 100644
+index 1afe527..6368c53 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -1183,6 +1185,48 @@ index 739f326..13114d1 100644
      return std::make_unique<VirtualQPainterBackend>(this);
  }
  
+@@ -147,8 +174,40 @@ VirtualOutput *VirtualBackend::createOutput(const OutputInfo &info)
+     return output;
+ }
+ 
+-BackendOutput *VirtualBackend::addOutput(const OutputInfo &info)
++BackendOutput *VirtualBackend::addOutput(const OutputInfo &inputInfo)
+ {
++    OutputInfo info = inputInfo;
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        const TermuxGuiDisplayInfo displayInfo = m_termuxGui->displayInfo();
++        if (!displayInfo.currentMode.size.isEmpty()) {
++            info.size = displayInfo.currentMode.size;
++            if ((displayInfo.orientation == QStringLiteral("landscape")) && info.size.width() < info.size.height()) {
++                info.size.transpose();
++            } else if ((displayInfo.orientation == QStringLiteral("portrait")) && info.size.width() > info.size.height()) {
++                info.size.transpose();
++            }
++
++            info.modes.clear();
++            for (const TermuxGuiDisplayMode &mode : displayInfo.modes) {
++                QSize modeSize = mode.size;
++                if ((displayInfo.orientation == QStringLiteral("landscape")) && modeSize.width() < modeSize.height()) {
++                    modeSize.transpose();
++                } else if ((displayInfo.orientation == QStringLiteral("portrait")) && modeSize.width() > modeSize.height()) {
++                    modeSize.transpose();
++                }
++                OutputModeline::Flags flags = OutputModeline::Flag::None;
++                if (mode.size == displayInfo.currentMode.size && mode.refreshRate == displayInfo.currentMode.refreshRate) {
++                    flags |= OutputModeline::Flag::Preferred;
++                }
++                info.modes.append(OutputModeline(modeSize, mode.refreshRate, flags));
++            }
++            if (info.modes.isEmpty()) {
++                info.modes.append(OutputModeline(info.size, displayInfo.currentMode.refreshRate, OutputModeline::Flag::Preferred));
++            }
++        }
++    }
++#endif
+     VirtualOutput *output = createOutput(info);
+     Q_EMIT outputsQueried();
+     return output;
 diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
 index 596d0b8..f6e5b32 100644
 --- a/src/backends/virtual/virtual_backend.h
