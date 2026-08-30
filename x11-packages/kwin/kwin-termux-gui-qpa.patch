@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..c0b6e5c
+index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,622 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -637,7 +637,7 @@ index 0000000..c0b6e5c
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +        virtualOutput->applyChanges(config);
 +        if (Workspace::self()) {
-+            Workspace::self()->updateOutputs();
++            Workspace::self()->updateOutputGeometry();
 +        }
 +    }
 +}
@@ -959,3 +959,33 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
+
+diff --git a/src/workspace.h b/src/workspace.h
+index 7d092498..7d092498 100644
+--- a/src/workspace.h
++++ b/src/workspace.h
+@@ -92,6 +92,7 @@ public:
+     static Workspace *self()
+     {
+         return _self;
+     }
++    void updateOutputGeometry();
+ 
+     bool hasWindow(const Window *);
+ 
+diff --git a/src/workspace.cpp b/src/workspace.cpp
+index be2aada3..be2aada3 100644
+--- a/src/workspace.cpp
++++ b/src/workspace.cpp
+@@ -1338,6 +1338,11 @@ QString Workspace::generateDescription(BackendOutput *output, const QList<BackendOutput *> &relevantOutputs) const
+     }
+ }
+ 
++void Workspace::updateOutputGeometry()
++{
++    updateOutputs();
++}
++
+ void Workspace::updateOutputs()
+ {
+     QHash<Window *, LogicalOutput *> oldMoveResizeOutputs;
