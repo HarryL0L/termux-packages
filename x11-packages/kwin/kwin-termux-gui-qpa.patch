@@ -31,7 +31,6 @@ index 0000000..4af01f7
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
-+#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -636,9 +635,7 @@ index 0000000..4af01f7
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +        virtualOutput->applyChanges(config);
-+        if (Workspace::self()) {
-+            Workspace::self()->updateOutputGeometry();
-+        }
++        Q_EMIT m_backend->outputsChanged();
 +    }
 +}
 +
@@ -959,33 +956,24 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
+diff --git a/src/core/outputbackend.h b/src/core/outputbackend.h
+--- a/src/core/outputbackend.h
++++ b/src/core/outputbackend.h
+@@ -78,6 +78,7 @@ public:
+ Q_SIGNALS:
+     void outputsQueried();
++    void outputsChanged();
+     /**
+      * This signal is emitted when an output has been connected. The @a output is not ready
+      * for compositing yet.
 
-diff --git a/src/workspace.h b/src/workspace.h
-index 7d092498..7d092498 100644
---- a/src/workspace.h
-+++ b/src/workspace.h
-@@ -92,6 +92,7 @@ public:
-     static Workspace *self()
-     {
-         return _self;
-     }
-+    void updateOutputGeometry();
- 
-     bool hasWindow(const Window *);
- 
 diff --git a/src/workspace.cpp b/src/workspace.cpp
-index be2aada3..be2aada3 100644
 --- a/src/workspace.cpp
 +++ b/src/workspace.cpp
-@@ -1338,6 +1338,11 @@ QString Workspace::generateDescription(BackendOutput *output, const QList<BackendOutput *> &relevantOutputs) const
-     }
- }
+@@ -340,6 +340,7 @@ Workspace::Workspace()
+     slotOutputBackendOutputsQueried();
+     connect(kwinApp()->outputBackend(), &OutputBackend::outputsQueried, this, &Workspace::slotOutputBackendOutputsQueried);
++    connect(kwinApp()->outputBackend(), &OutputBackend::outputsChanged, this, &Workspace::updateOutputs);
  
-+void Workspace::updateOutputGeometry()
-+{
-+    updateOutputs();
-+}
-+
- void Workspace::updateOutputs()
- {
-     QHash<Window *, LogicalOutput *> oldMoveResizeOutputs;
+     reconfigureTimer.setSingleShot(true);
+
