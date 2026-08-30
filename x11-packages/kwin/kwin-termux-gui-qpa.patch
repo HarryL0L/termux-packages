@@ -18,20 +18,20 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..8f7bb09
+index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,636 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
 +#include "core/outputconfiguration.h"
 +#include "core/shmgraphicsbufferallocator.h"
++#include "workspace.h"
 +#include "qpainter/qpainterswapchain.h"
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
-+#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -638,8 +638,17 @@ index 0000000..8f7bb09
 +        virtualOutput->applyChanges(config);
 +    }
 +
-+    if (Workspace *workspace = Workspace::self()) {
-+        workspace->updateOutputs();
++    // applyChanges() updates the backend output, but unlike Workspace::applyOutputConfiguration()
++    // it does not synchronize the corresponding LogicalOutput. Keep the logical output in lockstep
++    // with the Termux:GUI surface size before the next frame is rendered.
++    if (Workspace::self()) {
++        Workspace::self()->updateOutputs();
++    }
++
++    // A surface resize is asynchronous to the render loop. Explicitly request a frame so the first
++    // frame after the resize uses buffers matching the new surface dimensions.
++    for (BackendOutput *output : m_backend->outputs()) {
++        static_cast<VirtualOutput *>(output)->renderLoop()->scheduleRepaint();
 +    }
 +}
 +
