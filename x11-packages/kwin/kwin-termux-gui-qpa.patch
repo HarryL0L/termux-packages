@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..4af01f7
+index 0000000..8f7bb09
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,627 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -31,6 +31,7 @@ index 0000000..4af01f7
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
++#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -637,9 +638,9 @@ index 0000000..4af01f7
 +        virtualOutput->applyChanges(config);
 +    }
 +
-+    // BackendOutput::changed() only updates the backend state. Notify Workspace so
-+    // that its LogicalOutput geometry is rebuilt to match the new surface size.
-+    Q_EMIT m_backend->outputsQueried();
++    if (Workspace *workspace = Workspace::self()) {
++        workspace->updateOutputs();
++    }
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
