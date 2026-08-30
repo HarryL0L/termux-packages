@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..f020702
+index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,622 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -31,6 +31,7 @@ index 0000000..f020702
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
++#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -624,9 +625,9 @@ index 0000000..f020702
 +        return;
 +    }
 +
++    OutputConfiguration config;
 +    for (BackendOutput *output : m_backend->outputs()) {
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
-+        OutputConfiguration config;
 +        auto change = config.changeSet(virtualOutput);
 +        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
 +        change->customModes = {{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
@@ -634,13 +635,15 @@ index 0000000..f020702
 +        change->pos = QPoint(0, 0);
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
-+        virtualOutput->applyChanges(config);
 +    }
 +
-+    // BackendOutput changes do not automatically rebuild Workspace's
-+    // LogicalOutput geometry. Notify Workspace so rotation updates the
-+    // logical output size to match the new Termux:GUI surface.
-+    Q_EMIT m_backend->outputsQueried();
++    if (Workspace::self()) {
++        Workspace::self()->applyOutputConfiguration(config);
++    } else {
++        for (BackendOutput *output : m_backend->outputs()) {
++            static_cast<VirtualOutput *>(output)->applyChanges(config);
++        }
++    }
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
