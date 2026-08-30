@@ -18,16 +18,15 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..4af01f7
+index 0000000..6b888eb
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,624 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
 +#include "core/outputconfiguration.h"
 +#include "core/shmgraphicsbufferallocator.h"
-+#include "workspace.h"
 +#include "qpainter/qpainterswapchain.h"
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
@@ -635,12 +634,10 @@ index 0000000..4af01f7
 +        change->pos = QPoint(0, 0);
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
-+        if (Workspace::self()) {
-+            Workspace::self()->applyOutputConfiguration(config);
-+        } else {
-+            virtualOutput->applyChanges(config);
-+        }
++        virtualOutput->applyChanges(config);
 +    }
++
++    Q_EMIT m_backend->outputsChanged();
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
@@ -960,3 +957,27 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
+diff --git a/src/core/outputbackend.h b/src/core/outputbackend.h
+index cef89b0..ff0b198 100644
+--- a/src/core/outputbackend.h
++++ b/src/core/outputbackend.h
+@@ -89,6 +89,7 @@ public:
+ 
+ Q_SIGNALS:
+     void outputsQueried();
++    void outputsChanged();
+     /**
+      * This signal is emitted when an output has been connected. The @a output is not ready
+      * for compositing yet.
+diff --git a/src/workspace.cpp b/src/workspace.cpp
+index be2aada..62e4845 100644
+--- a/src/workspace.cpp
++++ b/src/workspace.cpp
+@@ -306,6 +306,7 @@ void Workspace::init()
+ 
+     slotOutputBackendOutputsQueried();
+     connect(kwinApp()->outputBackend(), &OutputBackend::outputsQueried, this, &Workspace::slotOutputBackendOutputsQueried);
++    connect(kwinApp()->outputBackend(), &OutputBackend::outputsChanged, this, &Workspace::updateOutputs);
+ 
+     reconfigureTimer.setSingleShot(true);
+     m_rearrangeTimer.setSingleShot(true);
