@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..4af01f7
+index 0000000..8f7bb09
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,627 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -31,6 +31,7 @@ index 0000000..4af01f7
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
++#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -635,7 +636,10 @@ index 0000000..4af01f7
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +        virtualOutput->applyChanges(config);
-+        Q_EMIT m_backend->outputsChanged();
++    }
++
++    if (Workspace *workspace = Workspace::self()) {
++        workspace->updateOutputs();
 +    }
 +}
 +
@@ -956,24 +960,3 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
-diff --git a/src/core/outputbackend.h b/src/core/outputbackend.h
---- a/src/core/outputbackend.h
-+++ b/src/core/outputbackend.h
-@@ -78,6 +78,7 @@ public:
- Q_SIGNALS:
-     void outputsQueried();
-+    void outputsChanged();
-     /**
-      * This signal is emitted when an output has been connected. The @a output is not ready
-      * for compositing yet.
-
-diff --git a/src/workspace.cpp b/src/workspace.cpp
---- a/src/workspace.cpp
-+++ b/src/workspace.cpp
-@@ -340,6 +340,7 @@ Workspace::Workspace()
-     slotOutputBackendOutputsQueried();
-     connect(kwinApp()->outputBackend(), &OutputBackend::outputsQueried, this, &Workspace::slotOutputBackendOutputsQueried);
-+    connect(kwinApp()->outputBackend(), &OutputBackend::outputsChanged, this, &Workspace::updateOutputs);
- 
-     reconfigureTimer.setSingleShot(true);
-
