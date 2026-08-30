@@ -27,7 +27,6 @@ index 0000000..4af01f7
 +#include "core/graphicsbufferview.h"
 +#include "core/outputconfiguration.h"
 +#include "core/shmgraphicsbufferallocator.h"
-+#include "workspace.h"
 +#include "qpainter/qpainterswapchain.h"
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
@@ -638,12 +637,9 @@ index 0000000..4af01f7
 +        virtualOutput->applyChanges(config);
 +    }
 +
-+    // applyChanges() updates the backend output, but unlike Workspace::applyOutputConfiguration()
-+    // it does not synchronize the corresponding LogicalOutput. Keep the logical output in lockstep
-+    // with the Termux:GUI surface size before the next frame is rendered.
-+    if (Workspace::self()) {
-+        Workspace::self()->updateOutputs();
-+    }
++    // Notify the workspace that the backend output changed so its LogicalOutput geometry
++    // is synchronized with the new Termux:GUI surface size before the next frame.
++    Q_EMIT m_backend->outputsQueried();
 +
 +    // A surface resize is asynchronous to the render loop. Explicitly request a frame so the first
 +    // frame after the resize uses buffers matching the new surface dimensions.
