@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..65381c5
+index 0000000..c0b6e5c
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,640 @@
+@@ -0,0 +1,626 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -31,6 +31,7 @@ index 0000000..65381c5
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
++#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -349,11 +350,6 @@ index 0000000..65381c5
 +    return false;
 +}
 +
-+void TermuxGuiInputDevice::setOutput(const VirtualOutput *output)
-+{
-+    m_output = output;
-+}
-+
 +void TermuxGuiInputDevice::handleTouch(const TermuxGuiTouchEvent &event)
 +{
 +    if (!m_enabled || !m_output) {
@@ -414,11 +410,6 @@ index 0000000..65381c5
 +
 +    m_device = new TermuxGuiInputDevice(output, this);
 +    connect(m_integration, &TermuxGuiIntegration::touchEvent, m_device, &TermuxGuiInputDevice::handleTouch, Qt::QueuedConnection);
-+    connect(m_backend, &VirtualBackend::outputAdded, this, [this](BackendOutput *output) {
-+        if (auto *virtualOutput = qobject_cast<VirtualOutput *>(output)) {
-+            m_device->setOutput(virtualOutput);
-+        }
-+    });
 +    Q_EMIT deviceAdded(m_device);
 +}
 +
@@ -634,26 +625,21 @@ index 0000000..65381c5
 +        return;
 +    }
 +
-+    const auto outputs = m_backend->outputs();
-+    if (outputs.size() != 1) {
-+        return;
++    for (BackendOutput *output : m_backend->outputs()) {
++        auto *virtualOutput = static_cast<VirtualOutput *>(output);
++        OutputConfiguration config;
++        auto change = config.changeSet(virtualOutput);
++        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
++        change->customModes = {{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
++        change->currentMode = OutputModeline(size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
++        change->pos = QPoint(0, 0);
++        change->transform = OutputTransform::Kind::Normal;
++        change->manualTransform = OutputTransform::Kind::Normal;
++        virtualOutput->applyChanges(config);
++        if (Workspace::self()) {
++            Workspace::self()->updateOutputs();
++        }
 +    }
-+
-+    const auto *output = qobject_cast<VirtualOutput *>(outputs.front());
-+    if (!output || output->modeSize() == size) {
-+        return;
-+    }
-+
-+    VirtualBackend::OutputInfo info;
-+    info.size = size;
-+    info.scale = output->scale();
-+    info.internal = output->isInternal();
-+    info.physicalSizeInMM = output->physicalSize();
-+    info.panelOrientation = output->panelOrientation();
-+    info.edid = output->edid().raw();
-+    info.connectorName = output->name();
-+    info.mstPath = output->mstPath();
-+    m_backend->setVirtualOutputs({info});
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
@@ -664,10 +650,10 @@ index 0000000..65381c5
 +} // namespace KWin
 diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
 new file mode 100644
-index 0000000..e44f84b
+index 0000000..c0bf732
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,185 @@
 +#pragma once
 +
 +#include "core/inputbackend.h"
@@ -774,7 +760,6 @@ index 0000000..e44f84b
 +    bool isLidSwitch() const override;
 +
 +    void handleTouch(const TermuxGuiTouchEvent &event);
-+    void setOutput(const VirtualOutput *output);
 +
 +private:
 +    const VirtualOutput *m_output;
