@@ -21,7 +21,7 @@ new file mode 100644
 index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,622 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -637,15 +637,9 @@ index 0000000..4af01f7
 +        virtualOutput->applyChanges(config);
 +    }
 +
-+    // Notify the workspace that the backend output changed so its LogicalOutput geometry
-+    // is synchronized with the new Termux:GUI surface size before the next frame.
++    // BackendOutput::changed() only updates the backend state. Notify Workspace so
++    // that its LogicalOutput geometry is rebuilt to match the new surface size.
 +    Q_EMIT m_backend->outputsQueried();
-+
-+    // A surface resize is asynchronous to the render loop. Explicitly request a frame so the first
-+    // frame after the resize uses buffers matching the new surface dimensions.
-+    for (BackendOutput *output : m_backend->outputs()) {
-+        static_cast<VirtualOutput *>(output)->renderLoop()->scheduleRepaint();
-+    }
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
