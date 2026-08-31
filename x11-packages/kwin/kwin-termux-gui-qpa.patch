@@ -1383,9 +1383,6 @@ index 739f326..aa35d82 100644
  #include "virtual_egl_backend.h"
  #include "virtual_output.h"
  #include "virtual_qpainter_backend.h"
-+#ifdef KWIN_BUILD_TERMUXGUI
-+#include "termuxgui_backend.h"
-+#endif
  
  #include <fcntl.h>
  #include <gbm.h>
@@ -1435,13 +1432,22 @@ diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtu
 index 596d0b8..f6e5b32 100644
 --- a/src/backends/virtual/virtual_backend.h
 +++ b/src/backends/virtual/virtual_backend.h
-@@ -17,6 +17,9 @@ namespace KWin
+@@ -8,6 +8,9 @@
+ #include "core/renderbackend.h"
+ #include "core/outputlayer.h"
++#ifdef KWIN_BUILD_TERMUXGUI
++#include "termuxgui_backend.h"
++#endif
+ 
+ namespace KWin
+ {
+@@ -17,6 +20,6 @@ namespace KWin
  
  class VirtualBackend;
  class VirtualOutput;
-+#ifdef KWIN_BUILD_TERMUXGUI
-+class TermuxGuiIntegration;
-+#endif
+-#ifdef KWIN_BUILD_TERMUXGUI
+-class TermuxGuiIntegration;
+-#endif
  class DrmDevice;
  class RenderDevice;
  
