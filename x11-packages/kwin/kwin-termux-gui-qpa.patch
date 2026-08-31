@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..eeea5a5
+index 0000000..4af01f7
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,624 @@
+@@ -0,0 +1,622 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -636,8 +636,6 @@ index 0000000..eeea5a5
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +        virtualOutput->applyChanges(config);
 +    }
-+
-+    Q_EMIT m_backend->outputGeometryChanged();
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
@@ -957,29 +955,130 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
-diff --git a/src/core/outputbackend.h b/src/core/outputbackend.h
-index cef89b0..a98f99a 100644
---- a/src/core/outputbackend.h
-+++ b/src/core/outputbackend.h
-@@ -89,6 +89,7 @@ public:
+diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
+index 4af01f7..fb57df5 100644
+--- a/src/backends/virtual/termuxgui_backend.cpp
++++ b/src/backends/virtual/termuxgui_backend.cpp
+@@ -556,18 +556,12 @@ TermuxGuiQPainterBackend::TermuxGuiQPainterBackend(VirtualBackend *backend, Term
+     , m_integration(integration)
+     , m_allocator(std::make_unique<ShmGraphicsBufferAllocator>())
+ {
+-    qRegisterMetaType<QSize>();
+     connect(m_backend, &VirtualBackend::outputAdded, this, &TermuxGuiQPainterBackend::addOutput);
+-    connect(m_integration, &TermuxGuiIntegration::surfaceSizeChanged, this, &TermuxGuiQPainterBackend::updateOutputSize, Qt::QueuedConnection);
  
- Q_SIGNALS:
-     void outputsQueried();
-+    void outputGeometryChanged();
-     /**
-      * This signal is emitted when an output has been connected. The @a output is not ready
-      * for compositing yet.
-diff --git a/src/workspace.cpp b/src/workspace.cpp
-index be2aada..406e77d 100644
---- a/src/workspace.cpp
-+++ b/src/workspace.cpp
-@@ -306,6 +306,9 @@ void Workspace::init()
+     for (BackendOutput *output : m_backend->outputs()) {
+         addOutput(output);
+     }
  
-     slotOutputBackendOutputsQueried();
-     connect(kwinApp()->outputBackend(), &OutputBackend::outputsQueried, this, &Workspace::slotOutputBackendOutputsQueried);
-+    connect(kwinApp()->outputBackend(), &OutputBackend::outputGeometryChanged, this, [this]() {
-+        updateOutputs();
-+    });
+-    const QSize size = m_integration->surfaceSize();
+-    if (!size.isEmpty()) {
+-        updateOutputSize(size);
+-    }
+ }
  
-     reconfigureTimer.setSingleShot(true);
-     m_rearrangeTimer.setSingleShot(true);
+ TermuxGuiQPainterBackend::~TermuxGuiQPainterBackend()
+@@ -594,26 +588,6 @@ void TermuxGuiQPainterBackend::addOutput(BackendOutput *output)
+     virtualOutput->setOutputLayer(std::make_unique<TermuxGuiQPainterLayer>(output, this));
+ }
+ 
+-void TermuxGuiQPainterBackend::updateOutputSize(const QSize &size)
+-{
+-    if (size.isEmpty()) {
+-        return;
+-    }
+-
+-    for (BackendOutput *output : m_backend->outputs()) {
+-        auto *virtualOutput = static_cast<VirtualOutput *>(output);
+-        OutputConfiguration config;
+-        auto change = config.changeSet(virtualOutput);
+-        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
+-        change->customModes = {{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
+-        change->currentMode = OutputModeline(size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
+-        change->pos = QPoint(0, 0);
+-        change->transform = OutputTransform::Kind::Normal;
+-        change->manualTransform = OutputTransform::Kind::Normal;
+-        virtualOutput->applyChanges(config);
+-    }
+-}
+-
+ QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
+ {
+     return {static_cast<VirtualOutput *>(output)->outputLayer()};
+diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
+index c0bf732..26dc04f 100644
+--- a/src/backends/virtual/termuxgui_backend.h
++++ b/src/backends/virtual/termuxgui_backend.h
+@@ -173,7 +173,6 @@ public:
+ 
+ private:
+     void addOutput(BackendOutput *output);
+-    void updateOutputSize(const QSize &size);
+ 
+     VirtualBackend *m_backend;
+     TermuxGuiIntegration *m_integration;
+diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
+index 669d9a0..6dc0d2c 100644
+--- a/src/backends/virtual/virtual_backend.cpp
++++ b/src/backends/virtual/virtual_backend.cpp
+@@ -11,6 +11,7 @@
+ #include "core/drmdevice.h"
+ #include "core/gpumanager.h"
+ #include "core/renderdevice.h"
++#include "core/outputconfiguration.h"
+ #include "virtual_egl_backend.h"
+ #include "virtual_output.h"
+ #include "virtual_qpainter_backend.h"
+@@ -90,6 +91,7 @@ VirtualBackend::VirtualBackend(QObject *parent)
+         m_termuxGui = std::make_unique<TermuxGuiIntegration>(this);
+         if (m_termuxGui->isValid()) {
+             m_termuxGui->waitForSurfaceSize(5000);
++            connect(m_termuxGui.get(), &TermuxGuiIntegration::surfaceSizeChanged, this, &VirtualBackend::updateTermuxGuiOutputSize, Qt::QueuedConnection);
+         }
+     }
+ #endif
+@@ -102,6 +104,30 @@ VirtualBackend::~VirtualBackend()
+     }
+ }
+ 
++#ifdef KWIN_BUILD_TERMUXGUI
++void VirtualBackend::updateTermuxGuiOutputSize(const QSize &size)
++{
++    if (size.isEmpty()) {
++        return;
++    }
++
++    for (VirtualOutput *output : std::as_const(m_outputs)) {
++        OutputConfiguration config;
++        auto change = config.changeSet(output);
++        const uint32_t refreshRate = output->refreshRate() ? output->refreshRate() : 60000;
++        const auto flags = OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred;
++        change->customModes = {{size, refreshRate, flags}};
++        change->currentMode = OutputModeline(size, refreshRate, flags);
++        change->pos = QPoint(0, 0);
++        change->transform = OutputTransform::Kind::Normal;
++        change->manualTransform = OutputTransform::Kind::Normal;
++        output->applyChanges(config);
++    }
++
++    Q_EMIT outputGeometryChanged();
++}
++#endif
++
+ bool VirtualBackend::initialize()
+ {
+ #ifdef KWIN_BUILD_TERMUXGUI
+diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
+index f6e5b32..b171244 100644
+--- a/src/backends/virtual/virtual_backend.h
++++ b/src/backends/virtual/virtual_backend.h
+@@ -70,6 +70,9 @@ Q_SIGNALS:
+ 
+ private:
+     VirtualOutput *createOutput(const OutputInfo &info);
++#ifdef KWIN_BUILD_TERMUXGUI
++    void updateTermuxGuiOutputSize(const QSize &size);
++#endif
+     void removeOutput(VirtualOutput *output);
+ 
+     QList<VirtualOutput *> m_outputs;
