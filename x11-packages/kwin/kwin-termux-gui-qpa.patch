@@ -1021,11 +1021,14 @@ diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/vir
 index 669d9a0..6dc0d2c 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
-@@ -11,6 +11,7 @@
+@@ -11,6 +11,10 @@
  #include "core/drmdevice.h"
  #include "core/gpumanager.h"
  #include "core/renderdevice.h"
 +#include "core/outputconfiguration.h"
++#ifdef KWIN_BUILD_TERMUXGUI
++#include "workspace.h"
++#endif
  #include "virtual_egl_backend.h"
  #include "virtual_output.h"
  #include "virtual_qpainter_backend.h"
@@ -1037,7 +1040,7 @@ index 669d9a0..6dc0d2c 100644
          }
      }
  #endif
-@@ -102,6 +104,30 @@ VirtualBackend::~VirtualBackend()
+@@ -102,6 +104,35 @@ VirtualBackend::~VirtualBackend()
      }
  }
  
@@ -1048,8 +1051,8 @@ index 669d9a0..6dc0d2c 100644
 +        return;
 +    }
 +
++    OutputConfiguration config;
 +    for (VirtualOutput *output : std::as_const(m_outputs)) {
-+        OutputConfiguration config;
 +        auto change = config.changeSet(output);
 +        const uint32_t refreshRate = output->refreshRate() ? output->refreshRate() : 60000;
 +        const auto flags = OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred;
@@ -1058,10 +1061,15 @@ index 669d9a0..6dc0d2c 100644
 +        change->pos = QPoint(0, 0);
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
-+        output->applyChanges(config);
 +    }
 +
-+    Q_EMIT outputGeometryChanged();
++    if (Workspace::self()) {
++        Workspace::self()->applyOutputConfiguration(config);
++    } else {
++        for (VirtualOutput *output : std::as_const(m_outputs)) {
++            output->applyChanges(config);
++        }
++    }
 +}
 +#endif
 +
