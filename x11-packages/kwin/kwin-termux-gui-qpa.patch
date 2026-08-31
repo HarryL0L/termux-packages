@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..8f7bb09
+index 0000000..eeea5a5
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,624 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -31,7 +31,6 @@ index 0000000..8f7bb09
 +#include "utils/softwarevsyncmonitor.h"
 +#include "virtual_backend.h"
 +#include "virtual_output.h"
-+#include "workspace.h"
 +
 +#include <QMetaType>
 +#include <QMutexLocker>
@@ -638,9 +637,7 @@ index 0000000..8f7bb09
 +        virtualOutput->applyChanges(config);
 +    }
 +
-+    if (Workspace *workspace = Workspace::self()) {
-+        workspace->updateOutputs();
-+    }
++    Q_EMIT m_backend->outputGeometryChanged();
 +}
 +
 +QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
@@ -960,3 +957,29 @@ index 596d0b8..f6e5b32 100644
  };
  
  } // namespace KWin
+diff --git a/src/core/outputbackend.h b/src/core/outputbackend.h
+index cef89b0..a98f99a 100644
+--- a/src/core/outputbackend.h
++++ b/src/core/outputbackend.h
+@@ -89,6 +89,7 @@ public:
+ 
+ Q_SIGNALS:
+     void outputsQueried();
++    void outputGeometryChanged();
+     /**
+      * This signal is emitted when an output has been connected. The @a output is not ready
+      * for compositing yet.
+diff --git a/src/workspace.cpp b/src/workspace.cpp
+index be2aada..406e77d 100644
+--- a/src/workspace.cpp
++++ b/src/workspace.cpp
+@@ -306,6 +306,9 @@ void Workspace::init()
+ 
+     slotOutputBackendOutputsQueried();
+     connect(kwinApp()->outputBackend(), &OutputBackend::outputsQueried, this, &Workspace::slotOutputBackendOutputsQueried);
++    connect(kwinApp()->outputBackend(), &OutputBackend::outputGeometryChanged, this, [this]() {
++        updateOutputs();
++    });
+ 
+     reconfigureTimer.setSingleShot(true);
+     m_rearrangeTimer.setSingleShot(true);
