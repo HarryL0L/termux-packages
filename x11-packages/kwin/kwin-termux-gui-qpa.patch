@@ -1,5 +1,5 @@
 diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
-index 9cf02b2..f19da48 100644
+index 9cf02b2c9a739427ef46b8af51400e9206c7859f..f19da48c7eb808483647d424e9d16417e76ba800 100644
 --- a/src/backends/virtual/CMakeLists.txt
 +++ b/src/backends/virtual/CMakeLists.txt
 @@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
@@ -18,10 +18,10 @@ index 9cf02b2..f19da48 100644
 +endif()
 diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 new file mode 100644
-index 0000000..458d34b
+index 0000000000000000000000000000000000000000..21816c70f3e275ad5cca74b9a60d35da34bd963a
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.cpp
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,649 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -626,8 +626,18 @@ index 0000000..458d34b
 +    }
 +
 +    OutputConfiguration config;
-+    for (BackendOutput *output : m_backend->outputs()) {
++    const auto outputs = m_backend->outputs();
++    for (BackendOutput *output : outputs) {
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
++        if (virtualOutput->modeSize() != size) {
++            // Drop the old render targets before changing the output mode.
++            // Otherwise the Termux:GUI surface can keep presenting a buffer
++            // from the previous orientation until another repaint occurs.
++            if (auto *layer = virtualOutput->outputLayer()) {
++                layer->releaseBuffers();
++            }
++        }
++
 +        auto change = config.changeSet(virtualOutput);
 +        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
 +        change->customModes = {{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
@@ -637,8 +647,21 @@ index 0000000..458d34b
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +    }
 +
-+    if (Workspace::self()) {
-+        Workspace::self()->applyOutputConfiguration(config);
++    Workspace *workspace = Workspace::self();
++    if (!workspace) {
++        return;
++    }
++
++    const auto error = workspace->applyOutputConfiguration(config);
++    if (error != OutputConfigurationError::None) {
++        return;
++    }
++
++    // Workspace schedules a repaint as part of the configuration transaction.
++    // Schedule again after dropping the old buffers to force immediate
++    // allocation and presentation of buffers matching the new surface size.
++    for (BackendOutput *output : outputs) {
++        output->renderLoop()->scheduleRepaint();
 +    }
 +}
 +
@@ -650,7 +673,7 @@ index 0000000..458d34b
 +} // namespace KWin
 diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
 new file mode 100644
-index 0000000..c0bf732
+index 0000000000000000000000000000000000000000..c0bf7326d1df87186d808ea82f8fcb818396486e
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_backend.h
 @@ -0,0 +1,185 @@
@@ -840,7 +863,7 @@ index 0000000..c0bf732
 +
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
-index 739f326..669d9a0 100644
+index 739f3264289ab0a7fce8c731a1ab9b1648c3c1e9..669d9a0cc76d92c9d5821fd814c41e197b5350e3 100644
 --- a/src/backends/virtual/virtual_backend.cpp
 +++ b/src/backends/virtual/virtual_backend.cpp
 @@ -14,6 +14,9 @@
@@ -928,7 +951,7 @@ index 739f326..669d9a0 100644
      return output;
  }
 diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
-index 596d0b8..f6e5b32 100644
+index 596d0b8335206ed5b00a8c22aa525adbf060a8ca..f6e5b32f38311692397767989d090e29113dd04f 100644
 --- a/src/backends/virtual/virtual_backend.h
 +++ b/src/backends/virtual/virtual_backend.h
 @@ -17,6 +17,9 @@ namespace KWin
