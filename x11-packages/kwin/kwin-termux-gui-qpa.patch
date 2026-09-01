@@ -17,8 +17,8 @@ diff -ruN a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeList
 +endif()
 diff -ruN a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 --- a/src/backends/virtual/termuxgui_backend.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/backends/virtual/termuxgui_backend.cpp	2026-08-31 17:42:57.982241075 +0000
-@@ -0,0 +1,666 @@
++++ b/src/backends/virtual/termuxgui_backend.cpp	2026-09-01 10:17:21.834388891 +0000
+@@ -0,0 +1,667 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -651,8 +651,9 @@ diff -ruN a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/te
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +
-+        qCWarning(KWIN_VIRTUAL, "[termuxgui] before apply: output=%s modeSize=%dx%d",
-+                   qPrintable(output->name()), output->modeSize().width(), output->modeSize().height());
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] before apply: output=%s ptr=%p modeSize=%dx%d refreshRate=%u changesetPtr=%p",
++                   qPrintable(output->name()), static_cast<void *>(output), output->modeSize().width(), output->modeSize().height(),
++                   refreshRate, static_cast<void *>(config.constChangeSet(output).get()));
 +    }
 +
 +    // IMPORTANT: go through Workspace::applyOutputConfiguration() instead of calling
@@ -992,3 +993,45 @@ diff -ruN a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtua
  };
  
  } // namespace KWin
+diff -ruN a/src/backends/virtual/virtual_output.cpp b/src/backends/virtual/virtual_output.cpp
+--- a/src/backends/virtual/virtual_output.cpp	2026-09-01 05:23:51.313962170 +0000
++++ b/src/backends/virtual/virtual_output.cpp	2026-09-01 10:17:45.682193740 +0000
+@@ -15,6 +15,7 @@
+ #include "core/renderbackend.h"
+ #include "core/renderloop.h"
+ #include "utils/softwarevsyncmonitor.h"
++#include "virtual_logging.h"
+ 
+ namespace KWin
+ {
+@@ -84,7 +85,10 @@
+ void VirtualOutput::applyChanges(const OutputConfiguration &config)
+ {
+     auto props = config.constChangeSet(this);
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges ENTER this=%p name=%s propsFound=%d",
++              static_cast<void *>(this), qPrintable(name()), props ? 1 : 0);
+     if (!props) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: no changeset for this output, returning without change");
+         return;
+     }
+     Q_EMIT aboutToChange(props.get());
+@@ -123,6 +127,9 @@
+     next.desiredMode = props->desiredMode.value_or(m_state.desiredMode);
+     if (props->currentMode) {
+         next.currentMode = props->currentMode->match(next.modes);
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: requested currentMode size=%dx%d flags=%d -> match()=%s",
++                  props->currentMode->size().width(), props->currentMode->size().height(), int(props->currentMode->flags()),
++                  next.currentMode ? "FOUND" : "NULL(fallback)");
+     }
+ 
+     if (!next.currentMode) {
+@@ -135,6 +142,9 @@
+     next.dpmsMode = props->dpmsMode.value_or(next.dpmsMode);
+     next.uuid = props->uuid.value_or(next.uuid);
+ 
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: committing state, next.currentMode size=%dx%d (modes.count=%d)",
++              next.currentMode->size().width(), next.currentMode->size().height(), int(next.modes.size()));
++
+     setState(next);
+     m_renderLoop->setRefreshRate(next.currentMode->refreshRate());
+     m_vsyncMonitor->setRefreshRate(next.currentMode->refreshRate());
