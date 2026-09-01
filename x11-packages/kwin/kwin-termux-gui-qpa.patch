@@ -17,8 +17,8 @@ diff -ruN a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeList
 +endif()
 diff -ruN a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
 --- a/src/backends/virtual/termuxgui_backend.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/backends/virtual/termuxgui_backend.cpp	2026-09-01 10:17:21.834388891 +0000
-@@ -0,0 +1,667 @@
++++ b/src/backends/virtual/termuxgui_backend.cpp	2026-09-01 14:38:48.294928766 +0000
+@@ -0,0 +1,680 @@
 +#include "termuxgui_backend.h"
 +
 +#include "core/graphicsbufferview.h"
@@ -645,15 +645,28 @@ diff -ruN a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/te
 +        auto *virtualOutput = static_cast<VirtualOutput *>(output);
 +        auto change = config.changeSet(virtualOutput);
 +        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
-+        change->customModes = {{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred}};
-+        change->currentMode = OutputModeline(size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred);
++
++        // IMPORTANT: OutputModeline::custom() runs size/refreshRate through libxcvt (VESA CVT
++        // timing generator), which can adjust the exact size/refresh-rate and always ORs in
++        // Flag::Generated on top of whatever flags we pass. VirtualOutput::applyChanges() builds
++        // the actual OutputMode objects in `modes` via this same custom() call, then tries to
++        // match `currentMode` against them with an exact (size, refreshRate, flags) comparison.
++        // If `currentMode` is built independently with the raw constructor, it will almost never
++        // compare equal to the mode that actually got inserted, match() silently returns null,
++        // and applyChanges() falls back to modes.front() -- i.e. the mode never actually changes.
++        // Building currentMode via the SAME custom() call guarantees they match.
++        const CustomModeDefinition modeDef{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred};
++        change->customModes = {modeDef};
++        change->currentMode = OutputModeline::custom(modeDef);
 +        change->pos = QPoint(0, 0);
 +        change->transform = OutputTransform::Kind::Normal;
 +        change->manualTransform = OutputTransform::Kind::Normal;
 +
-+        qCWarning(KWIN_VIRTUAL, "[termuxgui] before apply: output=%s ptr=%p modeSize=%dx%d refreshRate=%u changesetPtr=%p",
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] before apply: output=%s ptr=%p modeSize=%dx%d refreshRate=%u changesetPtr=%p currentMode(post-cvt)=%dx%d@%u flags=%d",
 +                   qPrintable(output->name()), static_cast<void *>(output), output->modeSize().width(), output->modeSize().height(),
-+                   refreshRate, static_cast<void *>(config.constChangeSet(output).get()));
++                   refreshRate, static_cast<void *>(config.constChangeSet(output).get()),
++                   change->currentMode->size().width(), change->currentMode->size().height(),
++                   change->currentMode->refreshRate(), int(change->currentMode->flags()));
 +    }
 +
 +    // IMPORTANT: go through Workspace::applyOutputConfiguration() instead of calling
