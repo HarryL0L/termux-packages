@@ -55,5 +55,4 @@ termux_step_pre_configure() {
 	fi
 
 	LDFLAGS+=" -landroid-shmem"
-	LDFLAGS+=" -rdynamic"
 }
