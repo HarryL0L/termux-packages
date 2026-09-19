@@ -1,0 +1,479 @@
+diff -ruN a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
+--- a/src/backends/virtual/CMakeLists.txt	2026-09-19 12:06:30.035572018 +0000
++++ b/src/backends/virtual/CMakeLists.txt	2026-09-19 12:07:48.328052896 +0000
+@@ -10,7 +10,7 @@
+ find_library(TERMUXGUI_LIBRARY NAMES termuxgui)
+ 
+ if (TERMUXGUI_INCLUDE_DIR AND TERMUXGUI_LIBRARY)
+-    target_sources(kwin PRIVATE termuxgui_backend.cpp)
++    target_sources(kwin PRIVATE termuxgui_backend.cpp termuxgui_pointer.cpp)
+     target_include_directories(kwin PRIVATE ${TERMUXGUI_INCLUDE_DIR})
+     target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
+     target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
+diff -ruN a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
+--- a/src/backends/virtual/termuxgui_backend.cpp	2026-09-19 12:06:30.035582390 +0000
++++ b/src/backends/virtual/termuxgui_backend.cpp	2026-09-19 12:07:48.327949610 +0000
+@@ -1,4 +1,5 @@
+ #include "termuxgui_backend.h"
++#include "termuxgui_pointer.h"
+ 
+ #include "core/graphicsbufferview.h"
+ #include "core/outputconfiguration.h"
+@@ -371,6 +372,20 @@
+     , m_integration(integration)
+     , m_device(nullptr)
+ {
++    const QString mode = qEnvironmentVariable("KWIN_TERMUXGUI_INPUT").trimmed().toLower();
++    if (mode == QLatin1String("touch")) {
++        m_mode = InputMode::Touch;
++    } else {
++        if (!mode.isEmpty() && mode != QLatin1String("trackpad")) {
++            qCWarning(KWIN_VIRTUAL, "Unknown KWIN_TERMUXGUI_INPUT value '%s', using trackpad", qPrintable(mode));
++        }
++        m_mode = InputMode::Trackpad;
++    }
++}
++
++TermuxGuiInputBackend::InputMode TermuxGuiInputBackend::inputMode() const
++{
++    return m_mode;
+ }
+ 
+ void TermuxGuiInputBackend::initialize()
+@@ -384,9 +399,22 @@
+         return;
+     }
+ 
+-    m_device = new TermuxGuiInputDevice(output, this);
+-    connect(m_integration, &TermuxGuiIntegration::touchEvent, m_device, &TermuxGuiInputDevice::handleTouch, Qt::QueuedConnection);
+-    Q_EMIT deviceAdded(m_device);
++    switch (m_mode) {
++    case InputMode::Touch:
++        qCDebug(KWIN_VIRTUAL, "Termux:GUI input: touchscreen mode");
++        m_device = new TermuxGuiInputDevice(output, this);
++        connect(m_integration, &TermuxGuiIntegration::touchEvent, m_device, &TermuxGuiInputDevice::handleTouch, Qt::QueuedConnection);
++        Q_EMIT deviceAdded(m_device);
++        break;
++    case InputMode::Trackpad:
++        qCDebug(KWIN_VIRTUAL, "Termux:GUI input: trackpad mode");
++        // Registering a pointer device is what makes KWin show its cursor: with only a touchscreen
++        // present PointerInputRedirection hides it.
++        m_pointer = new TermuxGuiPointerDevice(output, this);
++        connect(m_integration, &TermuxGuiIntegration::touchEvent, m_pointer, &TermuxGuiPointerDevice::handleTouch, Qt::QueuedConnection);
++        Q_EMIT deviceAdded(m_pointer);
++        break;
++    }
+ }
+ 
+ TermuxGuiQPainterLayer::TermuxGuiQPainterLayer(BackendOutput *output, TermuxGuiQPainterBackend *backend)
+diff -ruN a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
+--- a/src/backends/virtual/termuxgui_backend.h	2026-09-19 12:06:30.035527833 +0000
++++ b/src/backends/virtual/termuxgui_backend.h	2026-09-19 12:07:48.327781159 +0000
+@@ -110,19 +110,36 @@
+     bool m_enabled = true;
+ };
+ 
++class TermuxGuiPointerDevice;
++
+ class TermuxGuiInputBackend : public InputBackend
+ {
+     Q_OBJECT
+ 
+ public:
++    /**
++     * How touches on the Termux:GUI surface are reported to KWin.
++     * Selected with KWIN_TERMUXGUI_INPUT=touch|trackpad, default is trackpad.
++     */
++    enum class InputMode {
++        /// Touches are reported as a touchscreen. KWin shows no cursor.
++        Touch,
++        /// Touches move a cursor like a laptop trackpad. KWin draws its cursor.
++        Trackpad,
++    };
++
+     explicit TermuxGuiInputBackend(VirtualBackend *backend, TermuxGuiIntegration *integration, QObject *parent = nullptr);
+ 
+     void initialize() override;
+ 
++    InputMode inputMode() const;
++
+ private:
+     VirtualBackend *m_backend;
+     TermuxGuiIntegration *m_integration;
+     TermuxGuiInputDevice *m_device;
++    TermuxGuiPointerDevice *m_pointer = nullptr;
++    InputMode m_mode = InputMode::Trackpad;
+ };
+ 
+ class TermuxGuiQPainterBackend;
+diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/termuxgui_pointer.cpp
+--- a/src/backends/virtual/termuxgui_pointer.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/src/backends/virtual/termuxgui_pointer.cpp	2026-09-19 12:07:24.010317871 +0000
+@@ -0,0 +1,279 @@
++#include "termuxgui_pointer.h"
++
++#include "virtual_logging.h"
++#include "virtual_output.h"
++
++#include <linux/input-event-codes.h>
++
++#include <algorithm>
++#include <cmath>
++
++namespace KWin
++{
++
++namespace
++{
++// Finger movement (in surface pixels) after which a touch is a drag instead of a tap.
++constexpr qreal kTouchSlop = 12.0;
++// How long a finger has to rest before it turns into a held left button.
++constexpr int kLongPressMs = 500;
++// Two finger movement (in surface pixels) that equals one mouse wheel notch.
++constexpr qreal kScrollNotchPx = 40.0;
++
++qreal envDouble(const char *name, qreal fallback)
++{
++    if (!qEnvironmentVariableIsSet(name)) {
++        return fallback;
++    }
++    bool ok = false;
++    const qreal value = qEnvironmentVariable(name).toDouble(&ok);
++    return (ok && value > 0.0) ? value : fallback;
++}
++}
++
++TermuxGuiPointerDevice::TermuxGuiPointerDevice(const VirtualOutput *output, QObject *parent)
++    : InputDevice(parent)
++    , m_output(output)
++    , m_sensitivity(envDouble("KWIN_TERMUXGUI_TRACKPAD_SENSITIVITY", 1.0))
++    , m_scrollSensitivity(envDouble("KWIN_TERMUXGUI_TRACKPAD_SCROLL_SENSITIVITY", 1.0))
++{
++    m_longPressTimer.setSingleShot(true);
++    m_longPressTimer.setInterval(kLongPressMs);
++    connect(&m_longPressTimer, &QTimer::timeout, this, &TermuxGuiPointerDevice::onLongPress);
++}
++
++QString TermuxGuiPointerDevice::name() const
++{
++    return QStringLiteral("Termux:GUI Trackpad");
++}
++
++bool TermuxGuiPointerDevice::isEnabled() const
++{
++    return m_enabled;
++}
++
++void TermuxGuiPointerDevice::setEnabled(bool enabled)
++{
++    m_enabled = enabled;
++    if (!enabled) {
++        reset();
++    }
++}
++
++bool TermuxGuiPointerDevice::isKeyboard() const
++{
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isPointer() const
++{
++    return true;
++}
++
++bool TermuxGuiPointerDevice::isTouchpad() const
++{
++    // Reported as a plain mouse rather than a touchpad, so KWin doesn't try to apply libinput
++    // touchpad settings (tap-to-click, natural scrolling, ...) that this device handles itself.
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isTouch() const
++{
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isTabletTool() const
++{
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isTabletPad() const
++{
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isTabletModeSwitch() const
++{
++    return false;
++}
++
++bool TermuxGuiPointerDevice::isLidSwitch() const
++{
++    return false;
++}
++
++void TermuxGuiPointerDevice::setSensitivity(qreal sensitivity)
++{
++    if (sensitivity > 0.0) {
++        m_sensitivity = sensitivity;
++    }
++}
++
++void TermuxGuiPointerDevice::setScrollSensitivity(qreal sensitivity)
++{
++    if (sensitivity > 0.0) {
++        m_scrollSensitivity = sensitivity;
++    }
++}
++
++QPointF TermuxGuiPointerDevice::focusOf(const TermuxGuiTouchEvent &event, bool excludeIndex) const
++{
++    QPointF sum;
++    int n = 0;
++    for (int i = 0; i < event.points.size(); ++i) {
++        if (excludeIndex && static_cast<uint32_t>(i) == event.index) {
++            continue;
++        }
++        sum += QPointF(event.points.at(i).x, event.points.at(i).y);
++        ++n;
++    }
++    if (n == 0) {
++        return m_lastFocus;
++    }
++    return sum / n;
++}
++
++void TermuxGuiPointerDevice::emitButton(quint32 button, PointerButtonState state, std::chrono::microseconds time)
++{
++    Q_EMIT pointerButtonChanged(button, state, time, this);
++    Q_EMIT pointerFrame(this);
++}
++
++void TermuxGuiPointerDevice::emitClick(quint32 button, std::chrono::microseconds time)
++{
++    emitButton(button, PointerButtonState::Pressed, time);
++    emitButton(button, PointerButtonState::Released, time + std::chrono::microseconds(1000));
++}
++
++void TermuxGuiPointerDevice::emitScroll(int notchesX, int notchesY, std::chrono::microseconds time)
++{
++    if (notchesX != 0) {
++        Q_EMIT pointerAxisChanged(PointerAxis::Horizontal, 15.0 * notchesX, 120 * notchesX, PointerAxisSource::Wheel, false, time, this);
++    }
++    if (notchesY != 0) {
++        Q_EMIT pointerAxisChanged(PointerAxis::Vertical, 15.0 * notchesY, 120 * notchesY, PointerAxisSource::Wheel, false, time, this);
++    }
++    Q_EMIT pointerFrame(this);
++}
++
++void TermuxGuiPointerDevice::onLongPress()
++{
++    if (!m_active || m_moved || m_dragging || m_maxPointers != 1) {
++        return;
++    }
++    m_dragging = true;
++    emitButton(BTN_LEFT, PointerButtonState::Pressed, m_lastTime);
++}
++
++void TermuxGuiPointerDevice::reset()
++{
++    m_longPressTimer.stop();
++    if (m_dragging) {
++        emitButton(BTN_LEFT, PointerButtonState::Released, m_lastTime);
++    }
++    m_dragging = false;
++    m_moved = false;
++    m_active = false;
++    m_maxPointers = 0;
++    m_currentPointers = 0;
++    m_scrollAccumulator = QPointF();
++}
++
++void TermuxGuiPointerDevice::handleTouch(const TermuxGuiTouchEvent &event)
++{
++    if (!m_enabled) {
++        return;
++    }
++
++    const qreal scale = m_output ? std::max<qreal>(m_output->scale(), 0.01) : 1.0;
++    const auto time = std::chrono::microseconds(event.time * 1000);
++    m_lastTime = time;
++
++    switch (event.action) {
++    case TGUI_TOUCH_DOWN:
++        m_active = true;
++        m_moved = false;
++        m_dragging = false;
++        m_maxPointers = 1;
++        m_currentPointers = std::max(1, static_cast<int>(event.points.size()));
++        m_scrollAccumulator = QPointF();
++        m_lastFocus = focusOf(event, false);
++        m_downTimer.start();
++        m_longPressTimer.start();
++        break;
++
++    case TGUI_TOUCH_POINTER_DOWN:
++        m_currentPointers = event.points.size();
++        m_maxPointers = std::max(m_maxPointers, m_currentPointers);
++        m_lastFocus = focusOf(event, false);
++        m_longPressTimer.stop();
++        break;
++
++    case TGUI_TOUCH_POINTER_UP:
++        m_currentPointers = std::max(1, static_cast<int>(event.points.size()) - 1);
++        m_lastFocus = focusOf(event, true);
++        break;
++
++    case TGUI_TOUCH_MOVE: {
++        if (!m_active) {
++            break;
++        }
++        const QPointF focus = focusOf(event, false);
++        const QPointF delta = focus - m_lastFocus;
++        if (!m_moved && (std::abs(delta.x()) > kTouchSlop || std::abs(delta.y()) > kTouchSlop)) {
++            m_moved = true;
++            m_longPressTimer.stop();
++        }
++        if (!m_moved) {
++            break;
++        }
++        m_lastFocus = focus;
++
++        if (event.points.size() >= 2 && !m_dragging) {
++            const qreal notch = kScrollNotchPx / m_scrollSensitivity;
++            m_scrollAccumulator += delta;
++            const int nx = static_cast<int>(m_scrollAccumulator.x() / notch);
++            const int ny = static_cast<int>(m_scrollAccumulator.y() / notch);
++            if (nx != 0 || ny != 0) {
++                m_scrollAccumulator -= QPointF(nx * notch, ny * notch);
++                // fingers moving down drag the content down, which is the wheel scrolling up
++                emitScroll(-nx, -ny, time);
++            }
++        } else {
++            const QPointF logical = delta * m_sensitivity / scale;
++            Q_EMIT pointerMotion(logical, logical, time, this);
++            Q_EMIT pointerFrame(this);
++        }
++        break;
++    }
++
++    case TGUI_TOUCH_UP:
++        m_longPressTimer.stop();
++        if (m_dragging) {
++            m_dragging = false;
++            emitButton(BTN_LEFT, PointerButtonState::Released, time);
++        } else if (m_active && !m_moved && m_downTimer.elapsed() < kLongPressMs) {
++            switch (m_maxPointers) {
++            case 1:
++                emitClick(BTN_LEFT, time);
++                break;
++            case 2:
++                emitClick(BTN_RIGHT, time);
++                break;
++            default:
++                emitClick(BTN_MIDDLE, time);
++                break;
++            }
++        }
++        m_active = false;
++        break;
++
++    case TGUI_TOUCH_CANCEL:
++        reset();
++        break;
++    }
++}
++
++} // namespace KWin
++
++#include "moc_termuxgui_pointer.cpp"
+diff -ruN a/src/backends/virtual/termuxgui_pointer.h b/src/backends/virtual/termuxgui_pointer.h
+--- a/src/backends/virtual/termuxgui_pointer.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/backends/virtual/termuxgui_pointer.h	2026-09-19 12:06:49.210315803 +0000
+@@ -0,0 +1,84 @@
++#pragma once
++
++#include "core/inputdevice.h"
++#include "termuxgui_backend.h"
++
++#include <QElapsedTimer>
++#include <QPointF>
++#include <QTimer>
++
++#include <chrono>
++
++namespace KWin
++{
++
++class VirtualOutput;
++
++/**
++ * A pointer device that turns the touches on the Termux:GUI surface into trackpad style
++ * pointer input, so KWin gets a pointer and draws its cursor:
++ *
++ *  - one finger drag:       moves the cursor relative to the finger movement
++ *  - one finger tap:        left click
++ *  - one finger long press: holds the left button (drag) until the finger is lifted
++ *  - two finger tap:        right click
++ *  - two finger drag:       scroll
++ *  - three finger tap:      middle click
++ */
++class TermuxGuiPointerDevice : public InputDevice
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiPointerDevice(const VirtualOutput *output, QObject *parent = nullptr);
++
++    QString name() const override;
++    bool isEnabled() const override;
++    void setEnabled(bool enabled) override;
++    bool isKeyboard() const override;
++    bool isPointer() const override;
++    bool isTouchpad() const override;
++    bool isTouch() const override;
++    bool isTabletTool() const override;
++    bool isTabletPad() const override;
++    bool isTabletModeSwitch() const override;
++    bool isLidSwitch() const override;
++
++    /**
++     * Cursor movement per finger movement. Defaults to 1.0, or KWIN_TERMUXGUI_TRACKPAD_SENSITIVITY.
++     */
++    void setSensitivity(qreal sensitivity);
++    /**
++     * Scroll notches per finger movement. Defaults to 1.0, or KWIN_TERMUXGUI_TRACKPAD_SCROLL_SENSITIVITY.
++     */
++    void setScrollSensitivity(qreal sensitivity);
++
++    void handleTouch(const TermuxGuiTouchEvent &event);
++
++private:
++    QPointF focusOf(const TermuxGuiTouchEvent &event, bool excludeIndex) const;
++    void emitButton(quint32 button, PointerButtonState state, std::chrono::microseconds time);
++    void emitClick(quint32 button, std::chrono::microseconds time);
++    void emitScroll(int notchesX, int notchesY, std::chrono::microseconds time);
++    void onLongPress();
++    void reset();
++
++    const VirtualOutput *m_output;
++    bool m_enabled = true;
++    qreal m_sensitivity = 1.0;
++    qreal m_scrollSensitivity = 1.0;
++
++    // gesture state
++    QTimer m_longPressTimer;
++    QElapsedTimer m_downTimer;
++    QPointF m_lastFocus;
++    QPointF m_scrollAccumulator;
++    int m_maxPointers = 0;
++    int m_currentPointers = 0;
++    bool m_moved = false;
++    bool m_dragging = false;
++    bool m_active = false;
++    std::chrono::microseconds m_lastTime{0};
++};
++
++} // namespace KWin
