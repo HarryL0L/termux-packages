@@ -2002,10 +2002,10 @@ index 0000000..aaabb4c
 +} // namespace KWin
 diff --git a/src/backends/virtual/termuxgui_protocol.cpp b/src/backends/virtual/termuxgui_protocol.cpp
 new file mode 100644
-index 0000000..97c3a0c
+index 0000000..38a7b5c
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_protocol.cpp
-@@ -0,0 +1,956 @@
+@@ -0,0 +1,958 @@
 +/*
 +    KWin - the KDE window manager
 +    This file is part of the KDE project.
@@ -2742,7 +2742,8 @@ index 0000000..97c3a0c
 +        return std::nullopt;
 +    }
 +    PbReader r(*response);
-+    int aid = -1;
++    // proto3 omits zero-valued fields, and the first activity id IS 0
++    int aid = 0;
 +    int f, wt;
 +    while (r.next(f, wt)) {
 +        if (f == 1 && wt == 0) {
@@ -2752,6 +2753,7 @@ index 0000000..97c3a0c
 +        }
 +    }
 +    if (aid < 0) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] Termux:GUI could not start an activity (is it allowed to display over other apps / start from background?)");
 +        return std::nullopt;
 +    }
 +    return aid;
@@ -2793,7 +2795,7 @@ index 0000000..97c3a0c
 +        return std::nullopt;
 +    }
 +    PbReader r(*response);
-+    int id = -1;
++    int id = 0; // omitted when 0 (proto3), so default to success
 +    int64_t code = 0;
 +    int f, wt;
 +    while (r.next(f, wt)) {
