@@ -101,7 +101,7 @@ diff -ruN a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/term
  class TermuxGuiQPainterBackend;
 diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/termuxgui_pointer.cpp
 --- a/src/backends/virtual/termuxgui_pointer.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/backends/virtual/termuxgui_pointer.cpp	2026-09-19 16:40:03.078589782 +0000
++++ b/src/backends/virtual/termuxgui_pointer.cpp	2026-09-19 17:21:11.971855062 +0000
 @@ -0,0 +1,271 @@
 +#include "termuxgui_pointer.h"
 +
@@ -284,7 +284,7 @@ diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/te
 +        m_moved = false;
 +        m_dragging = false;
 +        m_maxPointers = 1;
-+        m_currentPointers = std::max(1, static_cast<int>(event.points.size()));
++        m_currentPointers = 1;
 +        m_scrollAccumulator = QPointF();
 +        m_lastFocus = focusOf(event, false);
 +        m_downFocus = m_lastFocus;
@@ -299,14 +299,14 @@ diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/te
 +        break;
 +
 +    case TGUI_TOUCH_POINTER_DOWN:
-+        m_currentPointers = event.points.size();
++        m_currentPointers = std::max(m_currentPointers + 1, static_cast<int>(event.points.size()));
 +        m_maxPointers = std::max(m_maxPointers, m_currentPointers);
 +        m_lastFocus = focusOf(event, false);
 +        m_downFocus = m_lastFocus;
 +        break;
 +
 +    case TGUI_TOUCH_POINTER_UP:
-+        m_currentPointers = std::max(1, static_cast<int>(event.points.size()) - 1);
++        m_currentPointers = std::max(1, m_currentPointers - 1);
 +        m_lastFocus = focusOf(event, true);
 +        m_downFocus = m_lastFocus;
 +        break;
@@ -326,7 +326,7 @@ diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/te
 +        }
 +        m_lastFocus = focus;
 +
-+        if (event.points.size() >= 2 && !m_dragging) {
++        if (m_currentPointers >= 2 && !m_dragging) {
 +            const qreal notch = kScrollNotchPx / m_scrollSensitivity;
 +            m_scrollAccumulator += delta;
 +            const int nx = static_cast<int>(m_scrollAccumulator.x() / notch);
