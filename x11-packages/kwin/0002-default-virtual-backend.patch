@@ -1,0 +1,31 @@
+From b358a97981d934157905772a32e1ab23f7d28acc Mon Sep 17 00:00:00 2001
+From: termux <termux@localhost>
+Date: Sat, 19 Sep 2026 05:03:34 +0000
+Subject: [PATCH 2/4] wayland: default to the virtual backend when built
+ without udev
+
+Without udev the DRM backend cannot discover any GPU, so picking it
+automatically would never produce an output. Fall back to the virtual
+backend instead when no backend is given on the command line.
+---
+ src/main_wayland.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 70432da..81873b2 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -495,8 +495,13 @@ int main(int argc, char *argv[])
+             backendType = BackendType::X11;
+ #endif
+         } else {
++#if HAVE_UDEV
+             qInfo("No backend specified, automatically choosing drm");
+             backendType = BackendType::Kms;
++#else
++            qInfo("No backend specified, automatically choosing virtual (drm/kms is unavailable in this build)");
++            backendType = BackendType::Virtual;
++#endif
+         }
+     }
+ 

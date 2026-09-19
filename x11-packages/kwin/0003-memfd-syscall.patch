@@ -1,0 +1,71 @@
+From 5c8d9da3095f3fa8c9034e3a882f7f5040a55f28 Mon Sep 17 00:00:00 2001
+From: termux <termux@localhost>
+Date: Sat, 19 Sep 2026 05:03:34 +0000
+Subject: [PATCH 3/4] shm: call memfd_create via syscall() instead of the libc
+ wrapper
+
+Bionic's headers do not reliably expose memfd_create()/MFD_* for the
+target API level, so the configure check fails and KWin falls back to
+mkstemp in /tmp, which does not exist on Termux. Invoke the syscall
+directly (the kernel has supported it since 3.17) and drop the fallback.
+---
+ src/core/shmgraphicsbufferallocator.cpp | 32 ++++++++++---------------
+ 1 file changed, 13 insertions(+), 19 deletions(-)
+
+diff --git a/src/core/shmgraphicsbufferallocator.cpp b/src/core/shmgraphicsbufferallocator.cpp
+index f2f30b1..edeb4f8 100644
+--- a/src/core/shmgraphicsbufferallocator.cpp
++++ b/src/core/shmgraphicsbufferallocator.cpp
+@@ -16,6 +16,18 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
++#include <sys/syscall.h>
++#ifndef MFD_CLOEXEC
++#define MFD_CLOEXEC 0x0001U
++#endif
++#ifndef MFD_ALLOW_SEALING
++#define MFD_ALLOW_SEALING 0x0002U
++#endif
++static inline int kwin_memfd_create(const char *name, unsigned int flags)
++{
++    return syscall(SYS_memfd_create, name, flags);
++}
++
+ namespace KWin
+ {
+ 
+@@ -97,8 +109,7 @@ GraphicsBuffer *ShmGraphicsBufferAllocator::allocate(const GraphicsBufferOptions
+     const int stride = options.size.width() * 4;
+     const int bufferSize = options.size.height() * stride;
+ 
+-#if HAVE_MEMFD
+-    FileDescriptor fd = FileDescriptor(memfd_create("shm", MFD_CLOEXEC | MFD_ALLOW_SEALING));
++    FileDescriptor fd = FileDescriptor(kwin_memfd_create("shm", MFD_CLOEXEC | MFD_ALLOW_SEALING));
+     if (!fd.isValid()) {
+         return nullptr;
+     }
+@@ -108,23 +119,6 @@ GraphicsBuffer *ShmGraphicsBufferAllocator::allocate(const GraphicsBufferOptions
+     }
+ 
+     fcntl(fd.get(), F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
+-#else
+-    char templateName[] = "/tmp/kwin-shm-XXXXXX";
+-    FileDescriptor fd{mkstemp(templateName)};
+-    if (!fd.isValid()) {
+-        return nullptr;
+-    }
+-
+-    unlink(templateName);
+-    int flags = fcntl(fd.get(), F_GETFD);
+-    if (flags == -1 || fcntl(fd.get(), F_SETFD, flags | FD_CLOEXEC) == -1) {
+-        return nullptr;
+-    }
+-
+-    if (ftruncate(fd.get(), bufferSize) < 0) {
+-        return nullptr;
+-    }
+-#endif
+ 
+     ShmAttributes attributes{
+         .fd = std::move(fd),
