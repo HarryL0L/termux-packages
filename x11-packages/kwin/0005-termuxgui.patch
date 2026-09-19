@@ -1,9 +1,5 @@
 termuxgui: Termux:GUI output/input backend with OpenGL (surfaceless EGL) and QPainter paths
 
-Self-contained: contains the Termux:GUI integration (activity, surface view,
-touch input, hardware buffers) plus OpenGL compositing through
-EGL_MESA_platform_surfaceless with dma-buf or readback presentation, and the
-QPainter fallback. Applies after 0001-0004.
 
 diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
 index 9cf02b2..af8aea4 100644
@@ -913,10 +909,10 @@ index 0000000..bb7fe44
 +Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
 diff --git a/src/backends/virtual/termuxgui_egl_backend.cpp b/src/backends/virtual/termuxgui_egl_backend.cpp
 new file mode 100644
-index 0000000..8e1db47
+index 0000000..b0a4084
 --- /dev/null
 +++ b/src/backends/virtual/termuxgui_egl_backend.cpp
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,517 @@
 +/*
 +    KWin - the KDE window manager
 +    This file is part of the KDE project.
@@ -927,6 +923,7 @@ index 0000000..8e1db47
 +*/
 +#include "termuxgui_egl_backend.h"
 +
++#include "core/drmdevice.h"
 +#include "core/graphicsbuffer.h"
 +#include "core/renderdevice.h"
 +#include "opengl/egldisplay.h"
