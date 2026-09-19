@@ -101,8 +101,8 @@ diff -ruN a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/term
  class TermuxGuiQPainterBackend;
 diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/termuxgui_pointer.cpp
 --- a/src/backends/virtual/termuxgui_pointer.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/backends/virtual/termuxgui_pointer.cpp	2026-09-19 14:15:24.101376855 +0000
-@@ -0,0 +1,268 @@
++++ b/src/backends/virtual/termuxgui_pointer.cpp	2026-09-19 16:40:03.078589782 +0000
+@@ -0,0 +1,271 @@
 +#include "termuxgui_pointer.h"
 +
 +#include "virtual_logging.h"
@@ -302,11 +302,13 @@ diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/te
 +        m_currentPointers = event.points.size();
 +        m_maxPointers = std::max(m_maxPointers, m_currentPointers);
 +        m_lastFocus = focusOf(event, false);
++        m_downFocus = m_lastFocus;
 +        break;
 +
 +    case TGUI_TOUCH_POINTER_UP:
 +        m_currentPointers = std::max(1, static_cast<int>(event.points.size()) - 1);
 +        m_lastFocus = focusOf(event, true);
++        m_downFocus = m_lastFocus;
 +        break;
 +
 +    case TGUI_TOUCH_MOVE: {
@@ -315,7 +317,8 @@ diff -ruN a/src/backends/virtual/termuxgui_pointer.cpp b/src/backends/virtual/te
 +        }
 +        const QPointF focus = focusOf(event, false);
 +        const QPointF delta = focus - m_lastFocus;
-+        if (!m_moved && (std::abs(focus.x() - m_downFocus.x()) > kTouchSlop || std::abs(focus.y() - m_downFocus.y()) > kTouchSlop)) {
++        const qreal slop = kTouchSlop * std::max(1, m_currentPointers);
++        if (!m_moved && (std::abs(focus.x() - m_downFocus.x()) > slop || std::abs(focus.y() - m_downFocus.y()) > slop)) {
 +            m_moved = true;
 +        }
 +        if (!m_moved) {
