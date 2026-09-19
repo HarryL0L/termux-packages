@@ -1,0 +1,1751 @@
+termuxgui: Termux:GUI output/input backend with OpenGL (surfaceless EGL) and QPainter paths
+
+Self-contained: contains the Termux:GUI integration (activity, surface view,
+touch input, hardware buffers) plus OpenGL compositing through
+EGL_MESA_platform_surfaceless with dma-buf or readback presentation, and the
+QPainter fallback. Applies after 0001-0004.
+
+diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
+index 9cf02b2..af8aea4 100644
+--- a/src/backends/virtual/CMakeLists.txt
++++ b/src/backends/virtual/CMakeLists.txt
+@@ -5,3 +5,13 @@ target_sources(kwin PRIVATE
+     virtual_output.cpp
+     virtual_qpainter_backend.cpp
+ )
++
++find_path(TERMUXGUI_INCLUDE_DIR NAMES termuxgui/termuxgui.h)
++find_library(TERMUXGUI_LIBRARY NAMES termuxgui)
++
++if (TERMUXGUI_INCLUDE_DIR AND TERMUXGUI_LIBRARY)
++    target_sources(kwin PRIVATE termuxgui_backend.cpp termuxgui_egl_backend.cpp)
++    target_include_directories(kwin PRIVATE ${TERMUXGUI_INCLUDE_DIR})
++    target_link_libraries(kwin PRIVATE ${TERMUXGUI_LIBRARY})
++    target_compile_definitions(kwin PRIVATE KWIN_BUILD_TERMUXGUI)
++endif()
+diff --git a/src/backends/virtual/termuxgui_backend.cpp b/src/backends/virtual/termuxgui_backend.cpp
+new file mode 100644
+index 0000000..a9c9a52
+--- /dev/null
++++ b/src/backends/virtual/termuxgui_backend.cpp
+@@ -0,0 +1,685 @@
++#include "termuxgui_backend.h"
++
++#include "core/graphicsbufferview.h"
++#include "core/outputconfiguration.h"
++#include "core/shmgraphicsbufferallocator.h"
++#include "qpainter/qpainterswapchain.h"
++#include "utils/softwarevsyncmonitor.h"
++#include "virtual_backend.h"
++#include "virtual_logging.h"
++#include "virtual_output.h"
++#include "workspace.h"
++
++#include <QMetaType>
++#include <QMutexLocker>
++#include <QLibrary>
++
++#include <android/hardware_buffer.h>
++#include <drm_fourcc.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <chrono>
++#include <cstring>
++#include <optional>
++
++namespace KWin
++{
++
++namespace
++{
++
++class AndroidHardwareBufferApi
++{
++public:
++    using DescribeFn = void (*)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
++    using LockFn = int (*)(AHardwareBuffer *, uint64_t, int32_t, const ARect *, void **);
++    using UnlockFn = int (*)(AHardwareBuffer *, int32_t *);
++
++    bool ensureLoaded()
++    {
++        if (m_loaded) {
++            return m_describe && m_lock && m_unlock;
++        }
++        m_loaded = true;
++        if (!m_library.load()) {
++            return false;
++        }
++        m_describe = reinterpret_cast<DescribeFn>(m_library.resolve("AHardwareBuffer_describe"));
++        m_lock = reinterpret_cast<LockFn>(m_library.resolve("AHardwareBuffer_lock"));
++        m_unlock = reinterpret_cast<UnlockFn>(m_library.resolve("AHardwareBuffer_unlock"));
++        return m_describe && m_lock && m_unlock;
++    }
++
++    DescribeFn describe() const
++    {
++        return m_describe;
++    }
++
++    LockFn lock() const
++    {
++        return m_lock;
++    }
++
++    UnlockFn unlock() const
++    {
++        return m_unlock;
++    }
++
++private:
++    QLibrary m_library{QStringLiteral("libandroid.so")};
++    DescribeFn m_describe = nullptr;
++    LockFn m_lock = nullptr;
++    UnlockFn m_unlock = nullptr;
++    bool m_loaded = false;
++};
++
++AndroidHardwareBufferApi &androidHardwareBufferApi()
++{
++    static AndroidHardwareBufferApi api;
++    return api;
++}
++
++} // namespace
++
++TermuxGuiIntegration::TermuxGuiIntegration(QObject *parent)
++    : QObject(parent)
++{
++    qRegisterMetaType<TermuxGuiTouchEvent>();
++
++    if (tgui_connection_create(&m_connection) != TGUI_ERR_OK) {
++        return;
++    }
++    if (tgui_activity_create(m_connection, &m_activity, TGUI_ACTIVITY_NORMAL, nullptr, false) != TGUI_ERR_OK) {
++        tgui_connection_destroy(m_connection);
++        m_connection = nullptr;
++        return;
++    }
++    if (tgui_activity_set_orientation(m_connection, m_activity, TGUI_ORIENTATION_FULL_USER) != TGUI_ERR_OK) {
++        tgui_connection_destroy(m_connection);
++        m_connection = nullptr;
++        return;
++    }
++
++    m_valid = true;
++    m_running = true;
++    m_thread = std::thread(&TermuxGuiIntegration::run, this);
++}
++
++TermuxGuiIntegration::~TermuxGuiIntegration()
++{
++    m_running = false;
++    if (m_thread.joinable()) {
++        m_thread.join();
++    }
++    if (m_connection) {
++        tgui_connection_destroy(m_connection);
++        m_connection = nullptr;
++    }
++}
++
++bool TermuxGuiIntegration::isValid() const
++{
++    return m_valid;
++}
++
++tgui_connection TermuxGuiIntegration::connection() const
++{
++    return m_connection;
++}
++
++tgui_activity TermuxGuiIntegration::activity() const
++{
++    return m_activity;
++}
++
++tgui_view TermuxGuiIntegration::view() const
++{
++    return m_view.load();
++}
++
++QSize TermuxGuiIntegration::surfaceSize() const
++{
++    QMutexLocker locker(&m_mutex);
++    return m_surfaceSize;
++}
++
++bool TermuxGuiIntegration::waitForSurfaceSize(int timeoutMs)
++{
++    QMutexLocker locker(&m_mutex);
++    if (!m_surfaceSize.isEmpty()) {
++        return true;
++    }
++    return m_surfaceSizeReady.wait(&m_mutex, timeoutMs) && !m_surfaceSize.isEmpty();
++}
++
++tgui_err TermuxGuiIntegration::createHardwareBuffer(tgui_hardware_buffer *buffer, uint32_t width, uint32_t height)
++{
++    return tgui_hardware_buffer_create(m_connection, buffer, TGUI_HARDWARE_BUFFER_FORMAT_RGBA8888, width, height, TGUI_HARDWARE_BUFFER_CPU_NEVER, TGUI_HARDWARE_BUFFER_CPU_OFTEN);
++}
++
++void TermuxGuiIntegration::destroyHardwareBuffer(tgui_hardware_buffer *buffer)
++{
++    if (buffer->buffer) {
++        tgui_hardware_buffer_destroy(m_connection, buffer);
++        buffer->buffer = nullptr;
++        buffer->id = -1;
++    }
++}
++
++tgui_err TermuxGuiIntegration::setBuffer(tgui_hardware_buffer *buffer)
++{
++    const tgui_view view = m_view.load();
++    if (view == -1) {
++        return TGUI_ERR_VIEW_INVALID;
++    }
++    return tgui_surface_view_set_buffer(m_connection, m_activity, view, buffer);
++}
++
++void TermuxGuiIntegration::createSurfaceView()
++{
++    if (m_view.load() != -1) {
++        return;
++    }
++
++    tgui_view view = -1;
++    if (tgui_create_surface_view(m_connection, m_activity, &view, nullptr, TGUI_VIS_VISIBLE, false) != TGUI_ERR_OK) {
++        return;
++    }
++    m_view = view;
++    const tgui_view_size matchParent{TGUI_VIEW_MATCH_PARENT, {}};
++    tgui_set_width(m_connection, m_activity, view, matchParent);
++    tgui_set_height(m_connection, m_activity, view, matchParent);
++    tgui_set_clickable(m_connection, m_activity, view, true);
++    tgui_send_touch_event(m_connection, m_activity, view, true);
++    tgui_surface_view_config(m_connection, m_activity, view, 0xff000000u, TGUI_MISMATCH_STICK_TOPLEFT, TGUI_MISMATCH_STICK_TOPLEFT, 60.0f);
++    tgui_activity_configure_insets(m_connection, m_activity, TGUI_INSET_NONE, TGUI_INSET_BEHAVIOUR_TRANSIENT);
++}
++
++void TermuxGuiIntegration::handleEvent(tgui_event &event)
++{
++    switch (event.type) {
++    case TGUI_EVENT_CREATE:
++        if (event.activity == m_activity) {
++            createSurfaceView();
++        }
++        break;
++    case TGUI_EVENT_DESTROY:
++        if (event.activity == m_activity) {
++            m_view = -1;
++        }
++        break;
++    case TGUI_EVENT_SURFACE_CHANGED:
++        if (event.activity == m_activity && event.surfaceChanged.id == m_view.load()) {
++            const QSize size(static_cast<int>(event.surfaceChanged.width), static_cast<int>(event.surfaceChanged.height));
++            qCWarning(KWIN_VIRTUAL, "[termuxgui] TGUI_EVENT_SURFACE_CHANGED received=%dx%d (poll thread)", size.width(), size.height());
++            {
++                QMutexLocker locker(&m_mutex);
++                m_surfaceSize = size;
++            }
++            m_surfaceSizeReady.wakeAll();
++            Q_EMIT surfaceSizeChanged(size);
++        }
++        break;
++    case TGUI_EVENT_TOUCH:
++        if (event.activity == m_activity && event.touch.id == m_view.load()) {
++            TermuxGuiTouchEvent touch;
++            touch.action = event.touch.action;
++            touch.index = event.touch.index;
++            touch.time = event.touch.time;
++            if (event.touch.events > 0) {
++                const uint32_t last = event.touch.events - 1;
++                touch.points.reserve(static_cast<int>(event.touch.num_pointers));
++                for (uint32_t i = 0; i < event.touch.num_pointers; ++i) {
++                    const tgui_touch_pointer p = event.touch.pointers[last][i];
++                    touch.points.push_back({p.id, p.x, p.y});
++                }
++            }
++            Q_EMIT touchEvent(touch);
++        }
++        break;
++    default:
++        break;
++    }
++}
++
++void TermuxGuiIntegration::run()
++{
++    while (m_running) {
++        bool handled = false;
++        for (;;) {
++            tgui_event event{};
++            bool available = false;
++            if (tgui_poll_event(m_connection, &event, &available) != TGUI_ERR_OK) {
++                m_running = false;
++                break;
++            }
++            if (!available) {
++                break;
++            }
++            handled = true;
++            handleEvent(event);
++            tgui_event_destroy(&event);
++        }
++        if (!handled) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
++    }
++}
++
++TermuxGuiInputDevice::TermuxGuiInputDevice(const VirtualOutput *output, QObject *parent)
++    : InputDevice(parent)
++    , m_output(output)
++{
++}
++
++QString TermuxGuiInputDevice::name() const
++{
++    return QStringLiteral("Termux:GUI Touchscreen");
++}
++
++bool TermuxGuiInputDevice::isEnabled() const
++{
++    return m_enabled;
++}
++
++void TermuxGuiInputDevice::setEnabled(bool enabled)
++{
++    m_enabled = enabled;
++}
++
++bool TermuxGuiInputDevice::isKeyboard() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isPointer() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTouchpad() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTouch() const
++{
++    return true;
++}
++
++bool TermuxGuiInputDevice::isTabletTool() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTabletPad() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isTabletModeSwitch() const
++{
++    return false;
++}
++
++bool TermuxGuiInputDevice::isLidSwitch() const
++{
++    return false;
++}
++
++void TermuxGuiInputDevice::handleTouch(const TermuxGuiTouchEvent &event)
++{
++    if (!m_enabled || !m_output) {
++        return;
++    }
++
++    const qreal scale = std::max<qreal>(m_output->scale(), 0.01);
++    const auto time = std::chrono::microseconds(event.time * 1000);
++
++    switch (event.action) {
++    case TGUI_TOUCH_DOWN:
++    case TGUI_TOUCH_POINTER_DOWN:
++        if (event.index < static_cast<uint32_t>(event.points.size())) {
++            const auto &p = event.points.at(static_cast<qsizetype>(event.index));
++            Q_EMIT touchDown(p.id, QPointF(p.x / scale, p.y / scale), time, this);
++        }
++        Q_EMIT touchFrame(this);
++        break;
++    case TGUI_TOUCH_UP:
++    case TGUI_TOUCH_POINTER_UP:
++        if (event.index < static_cast<uint32_t>(event.points.size())) {
++            const auto &p = event.points.at(static_cast<qsizetype>(event.index));
++            Q_EMIT touchUp(p.id, time, this);
++        }
++        Q_EMIT touchFrame(this);
++        break;
++    case TGUI_TOUCH_MOVE:
++        for (const auto &p : event.points) {
++            Q_EMIT touchMotion(p.id, QPointF(p.x / scale, p.y / scale), time, this);
++        }
++        Q_EMIT touchFrame(this);
++        break;
++    case TGUI_TOUCH_CANCEL:
++        Q_EMIT touchCanceled(this);
++        Q_EMIT touchFrame(this);
++        break;
++    }
++}
++
++TermuxGuiInputBackend::TermuxGuiInputBackend(VirtualBackend *backend, TermuxGuiIntegration *integration, QObject *parent)
++    : InputBackend(parent)
++    , m_backend(backend)
++    , m_integration(integration)
++    , m_device(nullptr)
++{
++}
++
++void TermuxGuiInputBackend::initialize()
++{
++    const auto outputs = m_backend->outputs();
++    if (outputs.isEmpty()) {
++        return;
++    }
++    auto *output = qobject_cast<VirtualOutput *>(outputs.front());
++    if (!output) {
++        return;
++    }
++
++    m_device = new TermuxGuiInputDevice(output, this);
++    connect(m_integration, &TermuxGuiIntegration::touchEvent, m_device, &TermuxGuiInputDevice::handleTouch, Qt::QueuedConnection);
++    Q_EMIT deviceAdded(m_device);
++}
++
++TermuxGuiQPainterLayer::TermuxGuiQPainterLayer(BackendOutput *output, TermuxGuiQPainterBackend *backend)
++    : OutputLayer(output, OutputLayerType::Primary)
++    , m_backend(backend)
++    , m_integration(backend->integration())
++{
++}
++
++TermuxGuiQPainterLayer::~TermuxGuiQPainterLayer()
++{
++    destroyBuffers();
++}
++
++bool TermuxGuiQPainterLayer::ensureBuffers(const QSize &size)
++{
++    bool recreate = false;
++    for (const auto &buffer : m_buffers) {
++        if (!buffer.valid) {
++            recreate = true;
++            break;
++        }
++    }
++    if (!recreate) {
++        auto &api = androidHardwareBufferApi();
++        if (!api.ensureLoaded()) {
++            return false;
++        }
++        AHardwareBuffer_Desc desc{};
++        api.describe()(m_buffers[0].hb.buffer, &desc);
++        recreate = QSize(static_cast<int>(desc.width), static_cast<int>(desc.height)) != size;
++    }
++    if (!recreate) {
++        return true;
++    }
++
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] ensureBuffers: recreating hardware buffers at %dx%d", size.width(), size.height());
++    destroyBuffers();
++    for (auto &buffer : m_buffers) {
++        if (m_integration->createHardwareBuffer(&buffer.hb, static_cast<uint32_t>(size.width()), static_cast<uint32_t>(size.height())) != TGUI_ERR_OK) {
++            qCWarning(KWIN_VIRTUAL, "[termuxgui] ensureBuffers: createHardwareBuffer FAILED at %dx%d", size.width(), size.height());
++            destroyBuffers();
++            return false;
++        }
++        buffer.valid = true;
++    }
++    m_currentBuffer = 0;
++    return true;
++}
++
++void TermuxGuiQPainterLayer::destroyBuffers()
++{
++    for (auto &buffer : m_buffers) {
++        if (buffer.valid) {
++            m_integration->destroyHardwareBuffer(&buffer.hb);
++            buffer.valid = false;
++        }
++    }
++}
++
++bool TermuxGuiQPainterLayer::copyImageToBuffer(const QImage *image, Buffer *buffer)
++{
++    if (!image || image->isNull() || !buffer->valid) {
++        return false;
++    }
++
++    auto &api = androidHardwareBufferApi();
++    if (!api.ensureLoaded()) {
++        return false;
++    }
++
++    AHardwareBuffer_Desc desc{};
++    api.describe()(buffer->hb.buffer, &desc);
++    if (desc.width != static_cast<uint32_t>(image->width()) || desc.height != static_cast<uint32_t>(image->height())) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] copyImageToBuffer: SIZE MISMATCH buffer=%ux%u image=%dx%d, skipping copy",
++                   desc.width, desc.height, image->width(), image->height());
++        return false;
++    }
++
++    void *mapped = nullptr;
++    const int rc = api.lock()(buffer->hb.buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &mapped);
++    if (rc != 0 || !mapped) {
++        return false;
++    }
++
++    const size_t srcStride = static_cast<size_t>(image->bytesPerLine());
++    auto *dst = static_cast<unsigned char *>(mapped);
++    const auto *src = image->constBits();
++    const size_t dstStride = static_cast<size_t>(desc.stride) * 4;
++    for (int y = 0; y < image->height(); ++y) {
++        const auto *srcRow = src + static_cast<size_t>(y) * srcStride;
++        auto *dstRow = dst + static_cast<size_t>(image->height() - 1 - y) * dstStride;
++        for (int x = 0; x < image->width(); ++x) {
++            dstRow[x * 4 + 0] = srcRow[x * 4 + 2];
++            dstRow[x * 4 + 1] = srcRow[x * 4 + 1];
++            dstRow[x * 4 + 2] = srcRow[x * 4 + 0];
++            dstRow[x * 4 + 3] = 0xff;
++        }
++    }
++
++    api.unlock()(buffer->hb.buffer, nullptr);
++    return true;
++}
++
++std::optional<OutputLayerBeginFrameInfo> TermuxGuiQPainterLayer::doBeginFrame()
++{
++    const QSize nativeSize = m_output->modeSize();
++    if (nativeSize.isEmpty()) {
++        return std::nullopt;
++    }
++    if (!m_swapchain || m_swapchain->size() != nativeSize) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] doBeginFrame: (re)creating swapchain at %dx%d (was %dx%d)",
++                   nativeSize.width(), nativeSize.height(),
++                   m_swapchain ? m_swapchain->size().width() : -1, m_swapchain ? m_swapchain->size().height() : -1);
++        m_swapchain = std::make_unique<QPainterSwapchain>(m_backend->graphicsBufferAllocator(), nativeSize, DRM_FORMAT_XRGB8888);
++    }
++    if (!ensureBuffers(nativeSize)) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] doBeginFrame: ensureBuffers(%dx%d) FAILED, skipping frame", nativeSize.width(), nativeSize.height());
++        return std::nullopt;
++    }
++
++    m_current = m_swapchain->acquire();
++    if (!m_current) {
++        return std::nullopt;
++    }
++
++    m_renderTime = std::make_unique<CpuRenderTimeQuery>();
++    return OutputLayerBeginFrameInfo{
++        .renderTarget = RenderTarget(m_current->view()->image()),
++        .repaint = Region::infinite(),
++    };
++}
++
++bool TermuxGuiQPainterLayer::doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame)
++{
++    if (m_renderTime) {
++        m_renderTime->end();
++        if (frame) {
++            frame->addRenderTimeQuery(std::move(m_renderTime));
++        }
++    }
++
++    Buffer &buffer = m_buffers[m_currentBuffer];
++    if (copyImageToBuffer(m_current ? m_current->view()->image() : nullptr, &buffer)) {
++        if (m_integration->view() != -1) {
++            const tgui_err err = m_integration->setBuffer(&buffer.hb);
++            if (err != TGUI_ERR_OK) {
++                qCWarning(KWIN_VIRTUAL, "[termuxgui] doEndFrame: setBuffer FAILED err=%d", static_cast<int>(err));
++            }
++        } else {
++            qCWarning(KWIN_VIRTUAL, "[termuxgui] doEndFrame: no surface view yet, dropping frame");
++        }
++        m_currentBuffer = (m_currentBuffer + 1) % m_buffers.size();
++    }
++    if (m_current) {
++        m_swapchain->release(m_current);
++        m_current.reset();
++    }
++    return true;
++}
++
++DrmDevice *TermuxGuiQPainterLayer::scanoutDevice() const
++{
++    return nullptr;
++}
++
++FormatModifierMap TermuxGuiQPainterLayer::supportedDrmFormats() const
++{
++    return {};
++}
++
++void TermuxGuiQPainterLayer::releaseBuffers()
++{
++    m_current.reset();
++    m_swapchain.reset();
++    destroyBuffers();
++}
++
++TermuxGuiQPainterBackend::TermuxGuiQPainterBackend(VirtualBackend *backend, TermuxGuiIntegration *integration)
++    : m_backend(backend)
++    , m_integration(integration)
++    , m_allocator(std::make_unique<ShmGraphicsBufferAllocator>())
++{
++    qRegisterMetaType<QSize>();
++    connect(m_backend, &VirtualBackend::outputAdded, this, &TermuxGuiQPainterBackend::addOutput);
++    connect(m_integration, &TermuxGuiIntegration::surfaceSizeChanged, this, &TermuxGuiQPainterBackend::updateOutputSize, Qt::QueuedConnection);
++
++    for (BackendOutput *output : m_backend->outputs()) {
++        addOutput(output);
++    }
++
++    const QSize size = m_integration->surfaceSize();
++    if (!size.isEmpty()) {
++        updateOutputSize(size);
++    }
++}
++
++TermuxGuiQPainterBackend::~TermuxGuiQPainterBackend()
++{
++    const auto outputs = m_backend->outputs();
++    for (BackendOutput *output : outputs) {
++        static_cast<VirtualOutput *>(output)->setOutputLayer(nullptr);
++    }
++}
++
++GraphicsBufferAllocator *TermuxGuiQPainterBackend::graphicsBufferAllocator() const
++{
++    return m_allocator.get();
++}
++
++TermuxGuiIntegration *TermuxGuiQPainterBackend::integration() const
++{
++    return m_integration;
++}
++
++void TermuxGuiQPainterBackend::addOutput(BackendOutput *output)
++{
++    auto *virtualOutput = static_cast<VirtualOutput *>(output);
++    virtualOutput->setOutputLayer(std::make_unique<TermuxGuiQPainterLayer>(output, this));
++}
++
++void termuxGuiApplyOutputSize(VirtualBackend *backend, const QSize &size)
++{
++    if (size.isEmpty()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] updateOutputSize() called with empty size, ignoring");
++        return;
++    }
++
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] updateOutputSize() requested=%dx%d", size.width(), size.height());
++
++    OutputConfiguration config;
++    for (BackendOutput *output : backend->outputs()) {
++        auto *virtualOutput = static_cast<VirtualOutput *>(output);
++        auto change = config.changeSet(virtualOutput);
++        const uint32_t refreshRate = virtualOutput->refreshRate() ? virtualOutput->refreshRate() : 60000;
++
++        // IMPORTANT: OutputModeline::custom() runs size/refreshRate through libxcvt (VESA CVT
++        // timing generator), which can adjust the exact size/refresh-rate and always ORs in
++        // Flag::Generated on top of whatever flags we pass. VirtualOutput::applyChanges() builds
++        // the actual OutputMode objects in `modes` via this same custom() call, then tries to
++        // match `currentMode` against them with an exact (size, refreshRate, flags) comparison.
++        // If `currentMode` is built independently with the raw constructor, it will almost never
++        // compare equal to the mode that actually got inserted, match() silently returns null,
++        // and applyChanges() falls back to modes.front() -- i.e. the mode never actually changes.
++        // Building currentMode via the SAME custom() call guarantees they match.
++        const CustomModeDefinition modeDef{size, refreshRate, OutputModeline::Flags(OutputModeline::Flag::Custom) | OutputModeline::Flag::Preferred};
++        change->customModes = {modeDef};
++        change->currentMode = OutputModeline::custom(modeDef);
++        change->pos = QPoint(0, 0);
++        change->transform = OutputTransform::Kind::Normal;
++        change->manualTransform = OutputTransform::Kind::Normal;
++
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] before apply: output=%s ptr=%p modeSize=%dx%d refreshRate=%u changesetPtr=%p currentMode(post-cvt)=%dx%d@%u flags=%d",
++                   qPrintable(output->name()), static_cast<void *>(output), output->modeSize().width(), output->modeSize().height(),
++                   refreshRate, static_cast<void *>(config.constChangeSet(output).get()),
++                   change->currentMode->size().width(), change->currentMode->size().height(),
++                   change->currentMode->refreshRate(), int(change->currentMode->flags()));
++    }
++
++    // IMPORTANT: go through Workspace::applyOutputConfiguration() instead of calling
++    // BackendOutput::applyChanges() directly. The direct call only updates the low-level
++    // BackendOutput state; it skips Workspace::updateOutputs() (which recomputes
++    // LogicalOutput geometry and re-lays-out windows to fit the new output size/shape)
++    // and skips scheduling a repaint on the render loop. Without those two steps, the
++    // scene can keep compositing the old, wrong-sized frame (or windows can keep the old
++    // geometry) until something unrelated happens to trigger a repaint, which is what
++    // produced the stuck/partial rendering after rotation.
++    if (Workspace *ws = Workspace::self()) {
++        const OutputConfigurationError error = ws->applyOutputConfiguration(config);
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] applyOutputConfiguration() result=%d", static_cast<int>(error));
++    } else {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] Workspace::self() is null, falling back to direct applyChanges() (no relayout/repaint will be scheduled)");
++        for (BackendOutput *output : backend->outputs()) {
++            static_cast<VirtualOutput *>(output)->applyChanges(config);
++        }
++    }
++
++    for (BackendOutput *output : backend->outputs()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] after apply: output=%s modeSize=%dx%d",
++                   qPrintable(output->name()), output->modeSize().width(), output->modeSize().height());
++    }
++}
++
++void TermuxGuiQPainterBackend::updateOutputSize(const QSize &size)
++{
++    termuxGuiApplyOutputSize(m_backend, size);
++}
++
++QList<OutputLayer *> TermuxGuiQPainterBackend::compatibleOutputLayers(BackendOutput *output)
++{
++    return {static_cast<VirtualOutput *>(output)->outputLayer()};
++}
++
++} // namespace KWin
+diff --git a/src/backends/virtual/termuxgui_backend.h b/src/backends/virtual/termuxgui_backend.h
+new file mode 100644
+index 0000000..bb7fe44
+--- /dev/null
++++ b/src/backends/virtual/termuxgui_backend.h
+@@ -0,0 +1,191 @@
++#pragma once
++
++#include "core/inputbackend.h"
++#include "core/inputdevice.h"
++#include "core/outputlayer.h"
++#include "core/renderbackend.h"
++#include "qpainter/qpainterbackend.h"
++
++#include <QMutex>
++#include <QWaitCondition>
++#include <QPoint>
++#include <QSize>
++#include <QVector>
++#include <QImage>
++#include <QList>
++
++#include <array>
++#include <atomic>
++#include <memory>
++#include <thread>
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class VirtualBackend;
++class VirtualOutput;
++class GraphicsBufferAllocator;
++class QPainterSwapchain;
++class QPainterSwapchainSlot;
++
++struct TermuxGuiTouchPoint
++{
++    int id;
++    int x;
++    int y;
++};
++
++struct TermuxGuiTouchEvent
++{
++    tgui_touch_action action;
++    QVector<TermuxGuiTouchPoint> points;
++    uint32_t index;
++    uint64_t time;
++};
++
++/**
++ * Resizes every output of @p backend to the Termux:GUI surface size and pushes
++ * the new configuration through the Workspace so windows get re-laid-out.
++ */
++void termuxGuiApplyOutputSize(VirtualBackend *backend, const QSize &size);
++
++class TermuxGuiIntegration : public QObject
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiIntegration(QObject *parent = nullptr);
++    ~TermuxGuiIntegration() override;
++
++    bool isValid() const;
++    tgui_connection connection() const;
++    tgui_activity activity() const;
++    tgui_view view() const;
++    QSize surfaceSize() const;
++    bool waitForSurfaceSize(int timeoutMs);
++
++    tgui_err createHardwareBuffer(tgui_hardware_buffer *buffer, uint32_t width, uint32_t height);
++    void destroyHardwareBuffer(tgui_hardware_buffer *buffer);
++    tgui_err setBuffer(tgui_hardware_buffer *buffer);
++
++Q_SIGNALS:
++    void surfaceSizeChanged(const QSize &size);
++    void touchEvent(const KWin::TermuxGuiTouchEvent &event);
++
++private:
++    void run();
++    void handleEvent(tgui_event &event);
++    void createSurfaceView();
++
++    tgui_connection m_connection = nullptr;
++    tgui_activity m_activity = -1;
++    std::atomic<tgui_view> m_view{-1};
++    std::atomic_bool m_running{false};
++    std::thread m_thread;
++    mutable QMutex m_mutex;
++    QWaitCondition m_surfaceSizeReady;
++    QSize m_surfaceSize;
++    bool m_valid = false;
++};
++
++class TermuxGuiInputDevice : public InputDevice
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiInputDevice(const VirtualOutput *output, QObject *parent = nullptr);
++
++    QString name() const override;
++    bool isEnabled() const override;
++    void setEnabled(bool enabled) override;
++    bool isKeyboard() const override;
++    bool isPointer() const override;
++    bool isTouchpad() const override;
++    bool isTouch() const override;
++    bool isTabletTool() const override;
++    bool isTabletPad() const override;
++    bool isTabletModeSwitch() const override;
++    bool isLidSwitch() const override;
++
++    void handleTouch(const TermuxGuiTouchEvent &event);
++
++private:
++    const VirtualOutput *m_output;
++    bool m_enabled = true;
++};
++
++class TermuxGuiInputBackend : public InputBackend
++{
++    Q_OBJECT
++
++public:
++    explicit TermuxGuiInputBackend(VirtualBackend *backend, TermuxGuiIntegration *integration, QObject *parent = nullptr);
++
++    void initialize() override;
++
++private:
++    VirtualBackend *m_backend;
++    TermuxGuiIntegration *m_integration;
++    TermuxGuiInputDevice *m_device;
++};
++
++class TermuxGuiQPainterBackend;
++
++class TermuxGuiQPainterLayer : public OutputLayer
++{
++public:
++    TermuxGuiQPainterLayer(BackendOutput *output, TermuxGuiQPainterBackend *backend);
++    ~TermuxGuiQPainterLayer() override;
++
++    std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
++    bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
++
++    DrmDevice *scanoutDevice() const override;
++    FormatModifierMap supportedDrmFormats() const override;
++    void releaseBuffers() override;
++
++private:
++    struct Buffer {
++        tgui_hardware_buffer hb{};
++        bool valid = false;
++    };
++
++    bool ensureBuffers(const QSize &size);
++    void destroyBuffers();
++    bool copyImageToBuffer(const QImage *image, Buffer *buffer);
++
++    TermuxGuiQPainterBackend *m_backend;
++    TermuxGuiIntegration *m_integration;
++    std::unique_ptr<QPainterSwapchain> m_swapchain;
++    std::shared_ptr<QPainterSwapchainSlot> m_current;
++    std::unique_ptr<CpuRenderTimeQuery> m_renderTime;
++    std::array<Buffer, 3> m_buffers;
++    size_t m_currentBuffer = 0;
++};
++
++class TermuxGuiQPainterBackend : public QPainterBackend
++{
++    Q_OBJECT
++
++public:
++    TermuxGuiQPainterBackend(VirtualBackend *backend, TermuxGuiIntegration *integration);
++    ~TermuxGuiQPainterBackend() override;
++
++    GraphicsBufferAllocator *graphicsBufferAllocator() const;
++    TermuxGuiIntegration *integration() const;
++    QList<OutputLayer *> compatibleOutputLayers(BackendOutput *output) override;
++
++private:
++    void addOutput(BackendOutput *output);
++    void updateOutputSize(const QSize &size);
++
++    VirtualBackend *m_backend;
++    TermuxGuiIntegration *m_integration;
++    std::unique_ptr<GraphicsBufferAllocator> m_allocator;
++};
++
++} // namespace KWin
++
++Q_DECLARE_METATYPE(KWin::TermuxGuiTouchEvent)
+diff --git a/src/backends/virtual/termuxgui_egl_backend.cpp b/src/backends/virtual/termuxgui_egl_backend.cpp
+new file mode 100644
+index 0000000..8e1db47
+--- /dev/null
++++ b/src/backends/virtual/termuxgui_egl_backend.cpp
+@@ -0,0 +1,516 @@
++/*
++    KWin - the KDE window manager
++    This file is part of the KDE project.
++
++    Termux:GUI OpenGL render backend, see termuxgui_egl_backend.h
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#include "termuxgui_egl_backend.h"
++
++#include "core/graphicsbuffer.h"
++#include "core/renderdevice.h"
++#include "opengl/egldisplay.h"
++#include "opengl/glframebuffer.h"
++#include "opengl/glrendertimequery.h"
++#include "opengl/gltexture.h"
++#include "opengl/glutils.h"
++#include "termuxgui_backend.h"
++#include "virtual_backend.h"
++#include "virtual_logging.h"
++#include "virtual_output.h"
++
++#include <QLibrary>
++
++#include <android/hardware_buffer.h>
++#include <drm_fourcc.h>
++#include <epoxy/egl.h>
++#include <cstring>
++#include <unistd.h>
++
++#ifndef EGL_PLATFORM_SURFACELESS_MESA
++#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
++#endif
++
++namespace KWin
++{
++
++namespace
++{
++
++// Termux:GUI shows the hardware buffer with memory row 0 at the bottom of the
++// screen (the QPainter path flips rows for the same reason), so flip while
++// presenting unless told otherwise.
++const bool s_flipY = qEnvironmentVariable("KWIN_TERMUX_GUI_FLIP") != QStringLiteral("0");
++
++// Minimal native_handle_t, see system/core/libcutils/include/cutils/native_handle.h
++struct native_handle
++{
++    int version;
++    int numFds;
++    int numInts;
++    int data[0];
++};
++
++class AndroidBufferApi
++{
++public:
++    using DescribeFn = void (*)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
++    using LockFn = int (*)(AHardwareBuffer *, uint64_t, int32_t, const ARect *, void **);
++    using UnlockFn = int (*)(AHardwareBuffer *, int32_t *);
++    using NativeHandleFn = const native_handle *(*)(const AHardwareBuffer *);
++
++    bool ensureLoaded()
++    {
++        if (m_loaded) {
++            return m_describe && m_lock && m_unlock;
++        }
++        m_loaded = true;
++        if (!m_android.load()) {
++            return false;
++        }
++        m_describe = reinterpret_cast<DescribeFn>(m_android.resolve("AHardwareBuffer_describe"));
++        m_lock = reinterpret_cast<LockFn>(m_android.resolve("AHardwareBuffer_lock"));
++        m_unlock = reinterpret_cast<UnlockFn>(m_android.resolve("AHardwareBuffer_unlock"));
++        // AHardwareBuffer_getNativeHandle is a VNDK symbol living in libnativewindow;
++        // some vendors also re-export it from libandroid.
++        if (m_nativeWindow.load()) {
++            m_nativeHandle = reinterpret_cast<NativeHandleFn>(m_nativeWindow.resolve("AHardwareBuffer_getNativeHandle"));
++        }
++        if (!m_nativeHandle) {
++            m_nativeHandle = reinterpret_cast<NativeHandleFn>(m_android.resolve("AHardwareBuffer_getNativeHandle"));
++        }
++        return m_describe && m_lock && m_unlock;
++    }
++
++    DescribeFn describeFn() const
++    {
++        return m_describe;
++    }
++    LockFn lockFn() const
++    {
++        return m_lock;
++    }
++    UnlockFn unlockFn() const
++    {
++        return m_unlock;
++    }
++    NativeHandleFn nativeHandleFn() const
++    {
++        return m_nativeHandle;
++    }
++
++private:
++    QLibrary m_android{QStringLiteral("libandroid.so")};
++    QLibrary m_nativeWindow{QStringLiteral("libnativewindow.so")};
++    DescribeFn m_describe = nullptr;
++    LockFn m_lock = nullptr;
++    UnlockFn m_unlock = nullptr;
++    NativeHandleFn m_nativeHandle = nullptr;
++    bool m_loaded = false;
++};
++
++AndroidBufferApi &androidBufferApi()
++{
++    static AndroidBufferApi api;
++    return api;
++}
++
++bool hasClientExtension(const QByteArray &name)
++{
++    const char *str = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
++    if (!str) {
++        return false;
++    }
++    return QByteArray::fromRawData(str, qstrlen(str)).split(' ').contains(name);
++}
++
++} // namespace
++
++std::unique_ptr<RenderDevice> createTermuxGuiRenderDevice()
++{
++    if (qEnvironmentVariable("KWIN_TERMUX_GUI_EGL") == QStringLiteral("0")) {
++        qCInfo(KWIN_VIRTUAL, "[termuxgui] OpenGL disabled by KWIN_TERMUX_GUI_EGL=0");
++        return nullptr;
++    }
++    if (!hasClientExtension(QByteArrayLiteral("EGL_EXT_platform_base"))
++        || !hasClientExtension(QByteArrayLiteral("EGL_MESA_platform_surfaceless"))) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] EGL_MESA_platform_surfaceless is not available, falling back to QPainter");
++        return nullptr;
++    }
++    const EGLDisplay display = eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
++    if (display == EGL_NO_DISPLAY) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] eglGetPlatformDisplayEXT(SURFACELESS) failed, falling back to QPainter");
++        return nullptr;
++    }
++    auto eglDisplay = EglDisplay::create(display, nullptr);
++    if (!eglDisplay) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] could not initialize the surfaceless EGL display, falling back to QPainter");
++        return nullptr;
++    }
++    if (eglDisplay->isSoftwareRenderer() && qEnvironmentVariable("KWIN_TERMUX_GUI_ALLOW_SOFTWARE_GL") != QStringLiteral("1")) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] the EGL display is a software renderer; using QPainter instead (set KWIN_TERMUX_GUI_ALLOW_SOFTWARE_GL=1 to override)");
++        return nullptr;
++    }
++    qCInfo(KWIN_VIRTUAL, "[termuxgui] using surfaceless EGL display for OpenGL compositing");
++    return std::make_unique<RenderDevice>(nullptr, std::move(eglDisplay));
++}
++
++// ---------------------------------------------------------------------------
++
++TermuxGuiEglLayer::TermuxGuiEglLayer(BackendOutput *output, TermuxGuiEglBackend *backend)
++    : OutputLayer(output, OutputLayerType::Primary)
++    , m_backend(backend)
++    , m_integration(backend->integration())
++{
++}
++
++TermuxGuiEglLayer::~TermuxGuiEglLayer()
++{
++    (void)m_backend->openglContext()->makeCurrent();
++    destroyBuffers();
++}
++
++bool TermuxGuiEglLayer::ensureRenderTarget(const QSize &size)
++{
++    if (m_renderTexture && m_renderTexture->size() == size && m_renderFbo && m_renderFbo->valid()) {
++        return true;
++    }
++    m_renderFbo.reset();
++    m_renderTexture = GLTexture::allocate(GL_RGBA8, size);
++    if (!m_renderTexture) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] could not allocate %dx%d render texture", size.width(), size.height());
++        return false;
++    }
++    m_renderTexture->setFilter(GL_NEAREST);
++    m_renderTexture->setWrapMode(GL_CLAMP_TO_EDGE);
++    m_renderFbo = std::make_unique<GLFramebuffer>(m_renderTexture.get());
++    if (!m_renderFbo->valid()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] render framebuffer is incomplete");
++        m_renderFbo.reset();
++        m_renderTexture.reset();
++        return false;
++    }
++    m_damageJournal.clear();
++    return true;
++}
++
++bool TermuxGuiEglLayer::ensureBuffers(const QSize &size)
++{
++    auto &api = androidBufferApi();
++    if (!api.ensureLoaded()) {
++        return false;
++    }
++
++    bool recreate = false;
++    for (const auto &buffer : m_buffers) {
++        if (!buffer.valid) {
++            recreate = true;
++            break;
++        }
++    }
++    if (!recreate) {
++        AHardwareBuffer_Desc desc{};
++        api.describeFn()(m_buffers[0].hb.buffer, &desc);
++        recreate = QSize(int(desc.width), int(desc.height)) != size;
++    }
++    if (!recreate) {
++        return true;
++    }
++
++    destroyBuffers();
++    for (auto &buffer : m_buffers) {
++        if (m_integration->createHardwareBuffer(&buffer.hb, uint32_t(size.width()), uint32_t(size.height())) != TGUI_ERR_OK) {
++            qCWarning(KWIN_VIRTUAL, "[termuxgui] creating a %dx%d hardware buffer failed", size.width(), size.height());
++            destroyBuffers();
++            return false;
++        }
++        buffer.valid = true;
++    }
++    m_currentBuffer = 0;
++    return true;
++}
++
++void TermuxGuiEglLayer::destroyBuffers()
++{
++    for (auto &buffer : m_buffers) {
++        buffer.framebuffer.reset();
++        buffer.texture.reset();
++        buffer.importAttempted = false;
++        if (buffer.valid) {
++            m_integration->destroyHardwareBuffer(&buffer.hb);
++            buffer.valid = false;
++        }
++    }
++}
++
++bool TermuxGuiEglLayer::importBuffer(Buffer &buffer)
++{
++    if (buffer.importAttempted) {
++        return buffer.framebuffer && buffer.framebuffer->valid();
++    }
++    buffer.importAttempted = true;
++
++    if (qEnvironmentVariable("KWIN_TERMUX_GUI_DMABUF") == QStringLiteral("0")) {
++        return false;
++    }
++
++    auto &api = androidBufferApi();
++    if (!api.nativeHandleFn()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] AHardwareBuffer_getNativeHandle unavailable, presenting through readback");
++        return false;
++    }
++    const native_handle *handle = api.nativeHandleFn()(buffer.hb.buffer);
++    if (!handle || handle->numFds < 1) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] hardware buffer has no dma-buf fd, presenting through readback");
++        return false;
++    }
++
++    AHardwareBuffer_Desc desc{};
++    api.describeFn()(buffer.hb.buffer, &desc);
++
++    DmaBufAttributes attrs;
++    attrs.planeCount = 1;
++    attrs.width = int(desc.width);
++    attrs.height = int(desc.height);
++    attrs.format = DRM_FORMAT_ABGR8888; // AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
++    attrs.modifier = DRM_FORMAT_MOD_LINEAR;
++    attrs.device = 0;
++    // The first fd of gralloc handles is the buffer itself (further fds, if
++    // any, carry vendor metadata).
++    attrs.fd[0] = FileDescriptor(dup(handle->data[0]));
++    attrs.offset[0] = 0;
++    attrs.pitch[0] = desc.stride * 4;
++
++    bool ok;
++    const uint64_t modifier = qEnvironmentVariable("KWIN_TERMUX_GUI_MODIFIER").toULongLong(&ok, 0);
++    if (ok) {
++        attrs.modifier = modifier;
++    }
++
++    if (!attrs.fd[0].isValid()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] dup() of the dma-buf fd failed, presenting through readback");
++        return false;
++    }
++
++    buffer.texture = m_backend->importDmaBufAsTexture(attrs);
++    if (!buffer.texture) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] dma-buf import of the hardware buffer failed (format ABGR8888, pitch %u, modifier 0x%llx), presenting through readback",
++                  attrs.pitch[0], static_cast<unsigned long long>(attrs.modifier));
++        return false;
++    }
++    buffer.framebuffer = std::make_unique<GLFramebuffer>(buffer.texture.get());
++    if (!buffer.framebuffer->valid()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] imported hardware buffer is not renderable, presenting through readback");
++        buffer.framebuffer.reset();
++        buffer.texture.reset();
++        return false;
++    }
++    qCInfo(KWIN_VIRTUAL, "[termuxgui] hardware buffer imported as dma-buf, presenting through GPU blit");
++    return true;
++}
++
++std::optional<OutputLayerBeginFrameInfo> TermuxGuiEglLayer::doBeginFrame()
++{
++    if (!m_backend->openglContext()->makeCurrent()) {
++        return std::nullopt;
++    }
++    const QSize nativeSize = m_output->modeSize();
++    if (nativeSize.isEmpty()) {
++        return std::nullopt;
++    }
++    if (!ensureRenderTarget(nativeSize)) {
++        return std::nullopt;
++    }
++    if (!ensureBuffers(nativeSize)) {
++        return std::nullopt;
++    }
++
++    m_query = std::make_unique<GLRenderTimeQuery>(m_backend->openglContextRef());
++    m_query->begin();
++
++    return OutputLayerBeginFrameInfo{
++        .renderTarget = RenderTarget(m_renderFbo.get()),
++        // the render texture persists between frames, so only new damage needs repainting
++        .repaint = m_damageJournal.accumulate(1, Region::infinite()),
++    };
++}
++
++bool TermuxGuiEglLayer::presentBlit(Buffer &buffer)
++{
++    GLFramebuffer::pushFramebuffer(m_renderFbo.get());
++    buffer.framebuffer->blitFromFramebuffer(Rect(), Rect(), GL_NEAREST, false, s_flipY);
++    GLFramebuffer::popFramebuffer();
++    // Termux:GUI has no fence parameter: make sure the GPU is done before the
++    // Android side scans the buffer out.
++    glFinish();
++    return true;
++}
++
++bool TermuxGuiEglLayer::presentReadback(Buffer &buffer)
++{
++    auto &api = androidBufferApi();
++    AHardwareBuffer_Desc desc{};
++    api.describeFn()(buffer.hb.buffer, &desc);
++
++    const int width = m_renderTexture->size().width();
++    const int height = m_renderTexture->size().height();
++    if (int(desc.width) != width || int(desc.height) != height) {
++        return false;
++    }
++
++    const size_t rowBytes = size_t(width) * 4;
++    if (m_readbackScratch.size() != qsizetype(rowBytes * height)) {
++        m_readbackScratch.resize(qsizetype(rowBytes * height));
++    }
++
++    GLFramebuffer::pushFramebuffer(m_renderFbo.get());
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, m_readbackScratch.data());
++    GLFramebuffer::popFramebuffer();
++
++    void *mapped = nullptr;
++    if (api.lockFn()(buffer.hb.buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &mapped) != 0 || !mapped) {
++        return false;
++    }
++    const size_t dstStride = size_t(desc.stride) * 4;
++    auto *dst = static_cast<unsigned char *>(mapped);
++    const auto *src = reinterpret_cast<const unsigned char *>(m_readbackScratch.constData());
++    for (int y = 0; y < height; ++y) {
++        const int dstRow = s_flipY ? (height - 1 - y) : y;
++        memcpy(dst + size_t(dstRow) * dstStride, src + size_t(y) * rowBytes, rowBytes);
++    }
++    api.unlockFn()(buffer.hb.buffer, nullptr);
++    return true;
++}
++
++bool TermuxGuiEglLayer::doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame)
++{
++    if (m_query) {
++        m_query->end();
++        if (frame) {
++            frame->addRenderTimeQuery(std::move(m_query));
++        }
++    }
++    m_damageJournal.add(damagedDeviceRegion);
++
++    Buffer &buffer = m_buffers[m_currentBuffer];
++    const bool presented = importBuffer(buffer) ? presentBlit(buffer) : presentReadback(buffer);
++    if (presented) {
++        if (m_integration->view() != -1) {
++            const tgui_err err = m_integration->setBuffer(&buffer.hb);
++            if (err != TGUI_ERR_OK) {
++                qCWarning(KWIN_VIRTUAL, "[termuxgui] setBuffer failed err=%d", int(err));
++            }
++        }
++        m_currentBuffer = (m_currentBuffer + 1) % m_buffers.size();
++    }
++    return true;
++}
++
++DrmDevice *TermuxGuiEglLayer::scanoutDevice() const
++{
++    return nullptr;
++}
++
++FormatModifierMap TermuxGuiEglLayer::supportedDrmFormats() const
++{
++    return m_backend->supportedFormats();
++}
++
++void TermuxGuiEglLayer::releaseBuffers()
++{
++    (void)m_backend->openglContext()->makeCurrent();
++    m_query.reset();
++    m_renderFbo.reset();
++    m_renderTexture.reset();
++    destroyBuffers();
++}
++
++GLTexture *TermuxGuiEglLayer::texture() const
++{
++    return m_renderTexture.get();
++}
++
++// ---------------------------------------------------------------------------
++
++TermuxGuiEglBackend::TermuxGuiEglBackend(VirtualBackend *backend, TermuxGuiIntegration *integration)
++    : m_backend(backend)
++    , m_integration(integration)
++{
++}
++
++TermuxGuiEglBackend::~TermuxGuiEglBackend()
++{
++    const auto outputs = m_backend->outputs();
++    for (BackendOutput *output : outputs) {
++        static_cast<VirtualOutput *>(output)->setOutputLayer(nullptr);
++    }
++    cleanup();
++}
++
++VirtualBackend *TermuxGuiEglBackend::backend() const
++{
++    return m_backend;
++}
++
++TermuxGuiIntegration *TermuxGuiEglBackend::integration() const
++{
++    return m_integration;
++}
++
++DrmDevice *TermuxGuiEglBackend::drmDevice() const
++{
++    return nullptr;
++}
++
++bool TermuxGuiEglBackend::init()
++{
++    RenderDevice *device = m_backend->renderDevice();
++    if (!device || !device->eglDisplay()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] no EGL display, OpenGL compositing unavailable");
++        return false;
++    }
++    // Deliberately not calling EglBackend::initClientExtensions(): it insists
++    // on EGL_KHR_platform_gbm, which is irrelevant for a surfaceless display.
++    setRenderDevice(device);
++    if (!createContext()) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] could not create the OpenGL context");
++        return false;
++    }
++    // EglBackend::initWayland() requires a DRM scanout device to advertise
++    // linux-dmabuf. There is none here, so clients keep using wl_shm buffers,
++    // which are uploaded to textures like on any other backend.
++
++    const auto outputs = m_backend->outputs();
++    for (BackendOutput *output : outputs) {
++        addOutput(output);
++    }
++    connect(m_backend, &VirtualBackend::outputAdded, this, &TermuxGuiEglBackend::addOutput);
++    connect(m_integration, &TermuxGuiIntegration::surfaceSizeChanged, this, &TermuxGuiEglBackend::updateOutputSize, Qt::QueuedConnection);
++
++    const QSize size = m_integration->surfaceSize();
++    if (!size.isEmpty()) {
++        updateOutputSize(size);
++    }
++    return true;
++}
++
++void TermuxGuiEglBackend::addOutput(BackendOutput *output)
++{
++    static_cast<VirtualOutput *>(output)->setOutputLayer(std::make_unique<TermuxGuiEglLayer>(output, this));
++}
++
++void TermuxGuiEglBackend::updateOutputSize(const QSize &size)
++{
++    termuxGuiApplyOutputSize(m_backend, size);
++}
++
++QList<OutputLayer *> TermuxGuiEglBackend::compatibleOutputLayers(BackendOutput *output)
++{
++    return {static_cast<VirtualOutput *>(output)->outputLayer()};
++}
++
++} // namespace KWin
++
++#include "moc_termuxgui_egl_backend.cpp"
+diff --git a/src/backends/virtual/termuxgui_egl_backend.h b/src/backends/virtual/termuxgui_egl_backend.h
+new file mode 100644
+index 0000000..d5d12ab
+--- /dev/null
++++ b/src/backends/virtual/termuxgui_egl_backend.h
+@@ -0,0 +1,116 @@
++/*
++    KWin - the KDE window manager
++    This file is part of the KDE project.
++
++    Termux:GUI OpenGL render backend.
++
++    Composites with OpenGL through a surfaceless EGL display (Mesa
++    Zink / Panfrost / Turnip ... on top of the Android GPU stack) and
++    presents through Termux:GUI hardware buffers. No DRM/KMS device is
++    required. The rendered frame is handed over to the Android side
++    either by a GPU-side blit into a dma-buf import of the hardware
++    buffer, or, if the import isn't possible on this driver, by a
++    glReadPixels() readback into a CPU mapping of the hardware buffer.
++
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++#pragma once
++
++#include "core/outputlayer.h"
++#include "opengl/eglbackend.h"
++#include "utils/damagejournal.h"
++
++#include <array>
++#include <memory>
++
++#include <termuxgui/termuxgui.h>
++
++namespace KWin
++{
++
++class GLFramebuffer;
++class GLRenderTimeQuery;
++class GLTexture;
++class RenderDevice;
++class TermuxGuiEglBackend;
++class TermuxGuiIntegration;
++class VirtualBackend;
++class VirtualOutput;
++
++/**
++ * Creates a RenderDevice that is backed by a surfaceless EGL display and no
++ * DRM device at all. Returns nullptr if the EGL implementation can't do that.
++ */
++std::unique_ptr<RenderDevice> createTermuxGuiRenderDevice();
++
++class TermuxGuiEglLayer : public OutputLayer
++{
++public:
++    TermuxGuiEglLayer(BackendOutput *output, TermuxGuiEglBackend *backend);
++    ~TermuxGuiEglLayer() override;
++
++    std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
++    bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
++
++    DrmDevice *scanoutDevice() const override;
++    FormatModifierMap supportedDrmFormats() const override;
++    void releaseBuffers() override;
++
++    GLTexture *texture() const;
++
++private:
++    struct Buffer
++    {
++        tgui_hardware_buffer hb{};
++        bool valid = false;
++        // GPU path: dma-buf import of the hardware buffer
++        std::shared_ptr<GLTexture> texture;
++        std::unique_ptr<GLFramebuffer> framebuffer;
++        bool importAttempted = false;
++    };
++
++    bool ensureRenderTarget(const QSize &size);
++    bool ensureBuffers(const QSize &size);
++    void destroyBuffers();
++    bool importBuffer(Buffer &buffer);
++    bool presentBlit(Buffer &buffer);
++    bool presentReadback(Buffer &buffer);
++
++    TermuxGuiEglBackend *const m_backend;
++    TermuxGuiIntegration *const m_integration;
++
++    // intermediate render target KWin composites into
++    std::unique_ptr<GLTexture> m_renderTexture;
++    std::unique_ptr<GLFramebuffer> m_renderFbo;
++    std::unique_ptr<GLRenderTimeQuery> m_query;
++    DamageJournal m_damageJournal;
++
++    std::array<Buffer, 3> m_buffers;
++    size_t m_currentBuffer = 0;
++    QByteArray m_readbackScratch;
++};
++
++class TermuxGuiEglBackend : public EglBackend
++{
++    Q_OBJECT
++
++public:
++    TermuxGuiEglBackend(VirtualBackend *backend, TermuxGuiIntegration *integration);
++    ~TermuxGuiEglBackend() override;
++
++    bool init() override;
++    QList<OutputLayer *> compatibleOutputLayers(BackendOutput *output) override;
++
++    VirtualBackend *backend() const;
++    TermuxGuiIntegration *integration() const;
++    DrmDevice *drmDevice() const override;
++
++private:
++    void addOutput(BackendOutput *output);
++    void updateOutputSize(const QSize &size);
++
++    VirtualBackend *const m_backend;
++    TermuxGuiIntegration *const m_integration;
++};
++
++} // namespace KWin
+diff --git a/src/backends/virtual/virtual_backend.cpp b/src/backends/virtual/virtual_backend.cpp
+index 739f326..3871276 100644
+--- a/src/backends/virtual/virtual_backend.cpp
++++ b/src/backends/virtual/virtual_backend.cpp
+@@ -14,6 +14,10 @@
+ #include "virtual_egl_backend.h"
+ #include "virtual_output.h"
+ #include "virtual_qpainter_backend.h"
++#ifdef KWIN_BUILD_TERMUXGUI
++#include "termuxgui_backend.h"
++#include "termuxgui_egl_backend.h"
++#endif
+ 
+ #include <fcntl.h>
+ #include <gbm.h>
+@@ -78,6 +82,23 @@ VirtualBackend::VirtualBackend(QObject *parent)
+     : OutputBackend(parent)
+     , m_renderDevice(findRenderDevice())
+ {
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (qEnvironmentVariableIsSet("KWIN_TERMUX_GUI") || qEnvironmentVariableIsSet("TERMUX_VERSION")) {
++        // kwin_wayland creates the initial virtual output before calling
++        // OutputBackend::initialize(). Create the Termux:GUI surface here so
++        // addOutput() can use the real surface size instead of the virtual
++        // backend's 1024x768 default.
++        m_termuxGui = std::make_unique<TermuxGuiIntegration>(this);
++        if (m_termuxGui->isValid()) {
++            m_termuxGui->waitForSurfaceSize(5000);
++            // No DRM device on this system: try a surfaceless EGL display so we
++            // can still composite on the GPU (Zink / Panfrost / Turnip ...).
++            if (!m_renderDevice) {
++                m_renderDevice = createTermuxGuiRenderDevice();
++            }
++        }
++    }
++#endif
+ }
+ 
+ VirtualBackend::~VirtualBackend()
+@@ -89,9 +110,27 @@ VirtualBackend::~VirtualBackend()
+ 
+ bool VirtualBackend::initialize()
+ {
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        if (!m_termuxGui->isValid() || m_termuxGui->surfaceSize().isEmpty()) {
++            m_termuxGui.reset();
++            return false;
++        }
++    }
++#endif
+     return true;
+ }
+ 
++std::unique_ptr<InputBackend> VirtualBackend::createInputBackend()
++{
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        return std::make_unique<TermuxGuiInputBackend>(this, m_termuxGui.get());
++    }
++#endif
++    return nullptr;
++}
++
+ QList<CompositingType> VirtualBackend::supportedCompositors() const
+ {
+     QList<CompositingType> compositingTypes;
+@@ -109,11 +148,21 @@ DrmDevice *VirtualBackend::drmDevice() const
+ 
+ std::unique_ptr<QPainterBackend> VirtualBackend::createQPainterBackend()
+ {
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        return std::make_unique<TermuxGuiQPainterBackend>(this, m_termuxGui.get());
++    }
++#endif
+     return std::make_unique<VirtualQPainterBackend>(this);
+ }
+ 
+ std::unique_ptr<EglBackend> VirtualBackend::createOpenGLBackend()
+ {
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        return std::make_unique<TermuxGuiEglBackend>(this, m_termuxGui.get());
++    }
++#endif
+     return std::make_unique<VirtualEglBackend>(this);
+ }
+ 
+@@ -149,7 +198,13 @@ VirtualOutput *VirtualBackend::createOutput(const OutputInfo &info)
+ 
+ BackendOutput *VirtualBackend::addOutput(const OutputInfo &info)
+ {
+-    VirtualOutput *output = createOutput(info);
++    OutputInfo outputInfo = info;
++#ifdef KWIN_BUILD_TERMUXGUI
++    if (m_termuxGui) {
++        outputInfo.size = m_termuxGui->surfaceSize();
++    }
++#endif
++    VirtualOutput *output = createOutput(outputInfo);
+     Q_EMIT outputsQueried();
+     return output;
+ }
+diff --git a/src/backends/virtual/virtual_backend.h b/src/backends/virtual/virtual_backend.h
+index 596d0b8..f6e5b32 100644
+--- a/src/backends/virtual/virtual_backend.h
++++ b/src/backends/virtual/virtual_backend.h
+@@ -17,6 +17,9 @@ namespace KWin
+ 
+ class VirtualBackend;
+ class VirtualOutput;
++#ifdef KWIN_BUILD_TERMUXGUI
++class TermuxGuiIntegration;
++#endif
+ class DrmDevice;
+ class RenderDevice;
+ 
+@@ -30,6 +33,7 @@ public:
+ 
+     bool initialize() override;
+ 
++    std::unique_ptr<InputBackend> createInputBackend() override;
+     std::unique_ptr<QPainterBackend> createQPainterBackend() override;
+     std::unique_ptr<EglBackend> createOpenGLBackend() override;
+ 
+@@ -70,6 +74,9 @@ private:
+ 
+     QList<VirtualOutput *> m_outputs;
+     std::unique_ptr<RenderDevice> m_renderDevice;
++#ifdef KWIN_BUILD_TERMUXGUI
++    std::unique_ptr<TermuxGuiIntegration> m_termuxGui;
++#endif
+ };
+ 
+ } // namespace KWin
+diff --git a/src/backends/virtual/virtual_output.cpp b/src/backends/virtual/virtual_output.cpp
+index 8c036fb..84e2b15 100644
+--- a/src/backends/virtual/virtual_output.cpp
++++ b/src/backends/virtual/virtual_output.cpp
+@@ -15,6 +15,7 @@
+ #include "core/renderbackend.h"
+ #include "core/renderloop.h"
+ #include "utils/softwarevsyncmonitor.h"
++#include "virtual_logging.h"
+ 
+ namespace KWin
+ {
+@@ -84,7 +85,10 @@ void VirtualOutput::init(const QSize &pixelSize, qreal scale, const QList<Output
+ void VirtualOutput::applyChanges(const OutputConfiguration &config)
+ {
+     auto props = config.constChangeSet(this);
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges ENTER this=%p name=%s propsFound=%d",
++              static_cast<void *>(this), qPrintable(name()), props ? 1 : 0);
+     if (!props) {
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: no changeset for this output, returning without change");
+         return;
+     }
+     Q_EMIT aboutToChange(props.get());
+@@ -123,6 +127,9 @@ void VirtualOutput::applyChanges(const OutputConfiguration &config)
+     next.desiredMode = props->desiredMode.value_or(m_state.desiredMode);
+     if (props->currentMode) {
+         next.currentMode = props->currentMode->match(next.modes);
++        qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: requested currentMode size=%dx%d flags=%d -> match()=%s",
++                  props->currentMode->size().width(), props->currentMode->size().height(), int(props->currentMode->flags()),
++                  next.currentMode ? "FOUND" : "NULL(fallback)");
+     }
+ 
+     if (!next.currentMode) {
+@@ -135,6 +142,9 @@ void VirtualOutput::applyChanges(const OutputConfiguration &config)
+     next.dpmsMode = props->dpmsMode.value_or(next.dpmsMode);
+     next.uuid = props->uuid.value_or(next.uuid);
+ 
++    qCWarning(KWIN_VIRTUAL, "[termuxgui] VirtualOutput::applyChanges: committing state, next.currentMode size=%dx%d (modes.count=%d)",
++              next.currentMode->size().width(), next.currentMode->size().height(), int(next.modes.size()));
++
+     setState(next);
+     m_renderLoop->setRefreshRate(next.currentMode->refreshRate());
+     m_vsyncMonitor->setRefreshRate(next.currentMode->refreshRate());
+diff --git a/src/core/renderdevice.cpp b/src/core/renderdevice.cpp
+index ac6fb39..b5080fe 100644
+--- a/src/core/renderdevice.cpp
++++ b/src/core/renderdevice.cpp
+@@ -269,7 +269,9 @@ void RenderDevice::handleVulkanDeviceLoss()
+ 
+ void RenderDevice::createVulkanDevice()
+ {
+-    if (!*m_vulkanInstance) {
++    if (!*m_vulkanInstance || !m_device) {
++        // Vulkan devices are matched against the DRM device; without one
++        // (surfaceless EGL-only render devices) there is nothing to match.
+         return;
+     }
+     m_vulkanDevice = openVulkanDevice(m_vulkanInstance, m_device.get());
