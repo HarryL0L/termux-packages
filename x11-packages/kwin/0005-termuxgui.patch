@@ -1,6 +1,3 @@
-termuxgui: Termux:GUI output/input backend with OpenGL (surfaceless EGL) and QPainter paths
-
-
 diff --git a/src/backends/virtual/CMakeLists.txt b/src/backends/virtual/CMakeLists.txt
 index 9cf02b2..af8aea4 100644
 --- a/src/backends/virtual/CMakeLists.txt
@@ -1731,6 +1728,42 @@ index 8c036fb..84e2b15 100644
      setState(next);
      m_renderLoop->setRefreshRate(next.currentMode->refreshRate());
      m_vsyncMonitor->setRefreshRate(next.currentMode->refreshRate());
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index 5e8b793..c49879c 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -131,9 +131,11 @@ static QVariantHash collectCrashInformation(const EglBackend *backend)
+     QVariantHash gpuInformation;
+     gpuInformation[QStringLiteral("api_type")] = QStringLiteral("OpenGL");
+     gpuInformation[QStringLiteral("name")] = QString::fromUtf8(glPlatform->glRendererString());
+-    if (const auto pciInfo = backend->drmDevice()->pciDeviceInfo()) {
+-        gpuInformation[QStringLiteral("id")] = QString::number(pciInfo->device_id, 16);
+-        gpuInformation[QStringLiteral("vendor_id")] = QString::number(pciInfo->vendor_id, 16);
++    if (const DrmDevice *drmDevice = backend->drmDevice()) {
++        if (const auto pciInfo = drmDevice->pciDeviceInfo()) {
++            gpuInformation[QStringLiteral("id")] = QString::number(pciInfo->device_id, 16);
++            gpuInformation[QStringLiteral("vendor_id")] = QString::number(pciInfo->vendor_id, 16);
++        }
+     }
+     if (glPlatform->driverVersion().isValid()) {
+         gpuInformation[QStringLiteral("version")] = glPlatform->driverVersion().toString();
+@@ -265,7 +267,15 @@ void Compositor::start()
+         case NoCompositing:
+             break;
+         case OpenGLCompositing:
+-            QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
++            if (m_backend->drmDevice()) {
++                QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
++            } else {
++                // KWin's own Qt Quick content (internal windows, effects) is
++                // shared with the scene through dma-buf swapchains, which need
++                // a DRM allocator. Without one, render it in software and let
++                // the scene upload it like any wl_shm buffer.
++                QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
++            }
+             break;
+         case QPainterCompositing:
+             QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
 diff --git a/src/core/renderdevice.cpp b/src/core/renderdevice.cpp
 index ac6fb39..b5080fe 100644
 --- a/src/core/renderdevice.cpp
@@ -1746,3 +1779,16 @@ index ac6fb39..b5080fe 100644
          return;
      }
      m_vulkanDevice = openVulkanDevice(m_vulkanInstance, m_device.get());
+diff --git a/src/wayland_server.cpp b/src/wayland_server.cpp
+index 031182e..466b81c 100644
+--- a/src/wayland_server.cpp
++++ b/src/wayland_server.cpp
+@@ -863,7 +863,7 @@ ExtBackgroundEffectManagerV1 *WaylandServer::backgroundEffectManager() const
+ 
+ void WaylandServer::setRenderBackend(RenderBackend *backend)
+ {
+-    if (backend->drmDevice()->supportsSyncObjTimelines()) {
++    if (backend->drmDevice() && backend->drmDevice()->supportsSyncObjTimelines()) {
+         // ensure the DRM_IOCTL_SYNCOBJ_EVENTFD ioctl is supported
+         const auto linuxVersion = linuxKernelVersion();
+         if (linuxVersion < Version(6, 6)) {
