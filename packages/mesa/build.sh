@@ -34,6 +34,7 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 -Dglvnd=enabled
 -Dxmlconfig=disabled
 -Dmesa-clc=system
+-Dprecomp-compiler=system
 -Dallow-kcmp=disabled
 "
 
@@ -122,6 +123,8 @@ termux_step_host_build() {
 		--prefix "$HOSTBUILD_ROOTFS/usr" \
 		-Dinstall-mesa-clc=true \
 		-Dmesa-clc=enabled \
+		-Dinstall-precomp-compiler=true \
+		-Dprecomp-compiler=enabled \
 		-Dplatforms= \
 		-Dllvm=enabled \
 		-Dgallium-rusticl=false \
