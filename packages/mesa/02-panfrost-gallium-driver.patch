@@ -1,0 +1,865 @@
+--- a/src/gallium/drivers/panfrost/pan_jm.c
++++ b/src/gallium/drivers/panfrost/pan_jm.c
+@@ -9,6 +9,7 @@
+ 
+ #include "drm-uapi/panfrost_drm.h"
+ 
++#include "kmod/kbase_kmod.h"
+ #include "pan_cmdstream.h"
+ #include "pan_context.h"
+ #include "pan_fb_preload.h"
+@@ -70,6 +71,52 @@
+    struct panfrost_context *ctx = batch->ctx;
+    struct pipe_context *gallium = (struct pipe_context *)ctx;
+    struct panfrost_device *dev = pan_device(gallium->screen);
++
++   /* kbase (/dev/mali0, no DRM node) has none of the DRM-specific
++    * concepts below - no jm_ctx_handle, no DRM syncobjs, no bo_handles
++    * list for implicit-sync tracking. Submit the job chain directly and
++    * skip all of that; see kbase_kmod.h for what this trades away
++    * (synchronous submission, no async fence) and what it doesn't need
++    * to (kbase's own dependency/completion model doesn't require an
++    * explicit per-submission BO list the way DRM panfrost's does). */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      /* Mark every BO this batch touches as GPU-busy, exactly as the DRM
++       * path below does while building its BO handle list. This is what
++       * panfrost_bo_wait() consults to decide whether it needs to ask the
++       * kernel at all - without it, every BO looks idle, bo_wait()
++       * short-circuits, and a CPU readback races the GPU (which the
++       * synchronous submission of earlier revisions masked entirely). */
++      pan_bo_access *flags = util_dynarray_begin(&batch->bos);
++      unsigned end_bo = util_dynarray_num_elements(&batch->bos, pan_bo_access);
++      for (unsigned i = 0; i < end_bo; ++i) {
++         if (!flags[i])
++            continue;
++         struct panfrost_bo *bo = pan_lookup_bo(dev, i);
++         bo->gpu_access |= flags[i] & (PAN_BO_ACCESS_RW);
++      }
++
++      /* kbase priority is per-atom, so the context's priority is applied
++       * here at submission rather than through a JM context object. */
++      enum kbase_kmod_prio prio = KBASE_KMOD_PRIO_MEDIUM;
++      if (ctx->flags & PIPE_CONTEXT_HIGH_PRIORITY)
++         prio = KBASE_KMOD_PRIO_HIGH;
++      else if (ctx->flags & PIPE_CONTEXT_LOW_PRIORITY)
++         prio = KBASE_KMOD_PRIO_LOW;
++      int ret = kbase_kmod_submit_jc(dev->kmod.dev, first_job_desc, reqs, prio);
++      if (ret)
++         return ret;
++
++      /* Per-BO wait tracking: tie every BO in the batch to the atom just
++       * submitted. (Pool BOs and the tiler heap aren't in this list, and
++       * nothing ever waits on them.) */
++      for (unsigned i = 0; i < end_bo; ++i) {
++         if (!flags[i])
++            continue;
++         kbase_kmod_bo_mark_used(pan_lookup_bo(dev, i)->kmod_bo);
++      }
++      return 0;
++   }
++
+    struct drm_panfrost_submit submit = {
+       .jm_ctx_handle = ctx->jm.handle,
+    };
+@@ -1066,6 +1113,14 @@
+    }
+ 
+    struct panfrost_device *dev = pan_device(ctx->base.screen);
++
++   /* kbase needs no JM context object: priority is per-atom there and is
++    * applied from ctx->flags at submission time in jm_submit_jc(). */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      ctx->jm.handle = 0;
++      return 0;
++   }
++
+    enum drm_panfrost_jm_ctx_priority prio;
+ 
+    if (ctx->flags & PIPE_CONTEXT_HIGH_PRIORITY)
+--- a/src/gallium/drivers/panfrost/pan_context.c
++++ b/src/gallium/drivers/panfrost/pan_context.c
+@@ -13,6 +13,8 @@
+ #include "pan_context.h"
+ #include "pan_minmax_cache.h"
+ 
++#include "kmod/kbase_kmod.h"
++
+ #include "util/format/u_format.h"
+ #include "util/half_float.h"
+ #include "util/libsync.h"
+@@ -1065,6 +1067,15 @@
+    int fd = -1;
+    assert(!value);
+ 
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      /* "Make the GPU wait on this fence before subsequent work": a
++       * FENCE_WAIT soft job that all later atoms order behind - a real
++       * GPU-side wait, the CPU doesn't block. */
++      if (f->kbase_fd >= 0)
++         kbase_kmod_fence_wait_fd(dev->kmod.dev, f->kbase_fd);
++      return;
++   }
++
+    ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+    assert(!ret);
+ 
+@@ -1107,12 +1118,19 @@
+ 
+    /* Create a syncobj in a signaled state. Will be updated to point to the
+     * last queued job out_sync every time we submit a new job.
+-    */
+-   ret = drmSyncobjCreate(panfrost_device_fd(dev), DRM_SYNCOBJ_CREATE_SIGNALED,
+-                          &ctx->syncobj);
+-   if (ret) {
+-      ralloc_free(ctx);
+-      return NULL;
++    *
++    * kbase has no DRM syncobj equivalent, and jm_submit_jc's kbase path
++    * (kbase_kmod_submit_jc) is synchronous - it never reads or writes
++    * ctx->syncobj, so leaving it 0 here is correct, not a stub. */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      ctx->syncobj = 0;
++   } else {
++      ret = drmSyncobjCreate(panfrost_device_fd(dev),
++                             DRM_SYNCOBJ_CREATE_SIGNALED, &ctx->syncobj);
++      if (ret) {
++         ralloc_free(ctx);
++         return NULL;
++      }
+    }
+ 
+    gallium->screen = screen;
+@@ -1212,10 +1230,17 @@
+ 
+    util_dynarray_init(&ctx->global_buffers, ctx);
+ 
+-   /* Sync object/FD used for NATIVE_FENCE_FD. */
++   /* Sync object/FD used for NATIVE_FENCE_FD. Same kbase caveat as
++    * ctx->syncobj above - EGL_ANDROID_native_fence_sync isn't wired up
++    * for the kbase path yet, so this is a known, flagged gap, not a
++    * silent one. */
+    ctx->in_sync_fd = -1;
+-   ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
+-   assert(!ret);
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      ctx->in_sync_obj = 0;
++   } else {
++      ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
++      assert(!ret);
++   }
+ 
+    ctx->printf.bo =
+       panfrost_bo_create(dev, PAN_PRINTF_BUFFER_SIZE, 0, "Printf Buffer");
+--- a/src/gallium/drivers/panfrost/pan_fence.c
++++ b/src/gallium/drivers/panfrost/pan_fence.c
+@@ -12,9 +12,36 @@
+ #include "pan_context.h"
+ #include "pan_screen.h"
+ 
++#include <limits.h>
++#include <errno.h>
++#include <poll.h>
++#include <unistd.h>
++
++#include "kmod/kbase_kmod.h"
+ #include "util/os_time.h"
+ #include "util/u_inlines.h"
+ 
++/* sync_file fds signal POLLIN once their fence is signaled - the
++ * standard, documented kernel sync_file poll() semantics, and exactly
++ * what sync_wait() itself is built on. This is the kbase-path
++ * equivalent of drmSyncobjWait(). */
++static bool
++kbase_fence_wait_fd(int fd, uint64_t timeout_ns)
++{
++   int timeout_ms;
++   if (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > INT64_MAX)
++      timeout_ms = -1;
++   else
++      timeout_ms = (int)MIN2((timeout_ns + 999999) / 1000000, (uint64_t)INT_MAX);
++
++   struct pollfd pfd = {.fd = fd, .events = POLLIN};
++   int ret;
++   do {
++      ret = poll(&pfd, 1, timeout_ms);
++   } while (ret < 0 && errno == EINTR);
++   return ret > 0 && (pfd.revents & POLLIN) && !(pfd.revents & (POLLERR | POLLNVAL));
++}
++
+ void
+ panfrost_fence_reference(struct pipe_screen *pscreen,
+                          struct pipe_fence_handle **ptr,
+@@ -24,7 +51,12 @@
+    struct pipe_fence_handle *old = *ptr;
+ 
+    if (pipe_reference(&old->reference, &fence->reference)) {
+-      drmSyncobjDestroy(panfrost_device_fd(dev), old->syncobj);
++      if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++         if (old->kbase_fd >= 0)
++            close(old->kbase_fd);
++      } else {
++         drmSyncobjDestroy(panfrost_device_fd(dev), old->syncobj);
++      }
+       free(old);
+    }
+ 
+@@ -41,6 +73,11 @@
+    if (fence->signaled)
+       return true;
+ 
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      fence->signaled = kbase_fence_wait_fd(fence->kbase_fd, timeout);
++      return fence->signaled;
++   }
++
+    uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
+    if (abs_timeout == OS_TIMEOUT_INFINITE)
+       abs_timeout = INT64_MAX;
+@@ -58,6 +95,13 @@
+    struct panfrost_device *dev = pan_device(screen);
+    int fd = -1;
+ 
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      /* The fence owns its fd; the caller takes ownership of the
++       * returned one, so hand back a dup(), same ownership contract as
++       * the DRM path's freshly-exported fd. */
++      return f->kbase_fd >= 0 ? dup(f->kbase_fd) : -1;
++   }
++
+    drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+    return fd;
+ }
+@@ -72,6 +116,24 @@
+    struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+    if (!f)
+       return NULL;
++   f->kbase_fd = -1;
++
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      /* Only sync_file fds are meaningful here - a DRM syncobj fd
++       * (PIPE_FD_TYPE_SYNCOBJ) is a DRM-specific object with no kbase
++       * equivalent. */
++      if (type != PIPE_FD_TYPE_NATIVE_SYNC) {
++         mesa_loge("kbase: only PIPE_FD_TYPE_NATIVE_SYNC fences are supported\n");
++         goto err_free_fence;
++      }
++      f->kbase_fd = dup(fd);
++      if (f->kbase_fd < 0) {
++         mesa_loge("kbase: dup(sync_file fd) failed\n");
++         goto err_free_fence;
++      }
++      pipe_reference_init(&f->reference, 1);
++      return f;
++   }
+ 
+    if (type == PIPE_FD_TYPE_NATIVE_SYNC) {
+       ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &f->syncobj);
+@@ -111,6 +173,30 @@
+    struct panfrost_device *dev = pan_device(ctx->base.screen);
+    int fd = -1, ret;
+ 
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
++      /* This is the call that was failing with "export failed" and
++       * returning NULL before: ctx->syncobj is deliberately 0 on kbase
++       * (no DRM syncobjs exist to export). Instead, ask the kbase kernel
++       * driver itself to mint a genuine sync_file via a FENCE_TRIGGER
++       * soft job - see kbase_kmod_create_fence_fd() for the protocol and
++       * why the result is a real, mergeable, cross-process fence rather
++       * than a userspace approximation. */
++      fd = kbase_kmod_create_fence_fd(dev->kmod.dev);
++      if (fd < 0) {
++         mesa_loge("kbase: fence trigger failed\n");
++         return NULL;
++      }
++
++      struct pipe_fence_handle *f = calloc(1, sizeof(*f));
++      if (!f) {
++         close(fd);
++         return NULL;
++      }
++      f->kbase_fd = fd;
++      pipe_reference_init(&f->reference, 1);
++      return f;
++   }
++
+    /* Snapshot the last rendering out fence. We'd rather have another
+     * syncobj instead of a sync file, but this is all we get.
+     * (HandleToFD/FDToHandle just gives you another syncobj ID for the
+--- a/src/gallium/drivers/panfrost/pan_fence.h
++++ b/src/gallium/drivers/panfrost/pan_fence.h
+@@ -13,6 +13,13 @@
+    struct pipe_reference reference;
+    uint32_t syncobj;
+    bool signaled;
++
++   /* kbase backend only (pan_kmod_dev_is_kbase): a genuine kernel
++    * sync_file fd owned by this fence object, created via a kbase
++    * FENCE_TRIGGER soft job (kbase_kmod_create_fence_fd) or dup()'d from
++    * an imported fd. -1 on the DRM path, where `syncobj` is used
++    * instead. See pan_fence.c's kbase branches. */
++   int kbase_fd;
+ };
+ 
+ void panfrost_fence_reference(struct pipe_screen *pscreen,
+--- a/src/gallium/drivers/panfrost/pan_screen.c
++++ b/src/gallium/drivers/panfrost/pan_screen.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "draw/draw_context.h"
++#include "kmod/kbase_kmod.h"
+ #include "pipe/p_defines.h"
+ #include "pipe/p_screen.h"
+ #include "util/format/u_format.h"
+@@ -669,6 +670,20 @@
+ 
+    struct panfrost_device *dev = &screen->dev;
+ 
++   /* u_init_pipe_screen_caps() derives caps.dmabuf from
++    * drmGetCap(DRM_CAP_PRIME), which fails on the ARM kbase node (not a
++    * DRM device), leaving the cap at 0 and making the DRI/EGL layers
++    * believe dma-buf import/export is unsupported. The kbase backend
++    * does both: import through KBASE_IOCTL_MEM_IMPORT (any dma-buf), and
++    * export of shareable BOs, which are ION allocations whose dma-buf fd
++    * it hands out (that is how every window buffer reaches the X server).
++    * Say so, so EGL_EXT_image_dma_buf_import / EGL_MESA_image_dma_buf_export
++    * are advertised. */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
++      caps->dmabuf = kbase_kmod_dev_can_share(dev->kmod.dev)
++                        ? DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT
++                        : DRM_PRIME_CAP_IMPORT;
++
+    /* Our GL 3.x implementation is WIP */
+    bool is_gl3 = dev->debug & PAN_DBG_GL3;
+ 
+@@ -1034,6 +1049,12 @@
+       return NULL;
+    }
+ 
++   /* The BO cache unmaps freed buffers and re-maps them on reuse. kbase
++    * frees SAME_VA memory when its last CPU mapping goes away, so cached
++    * entries would refer to released memory; disable the cache. */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
++      dev->debug |= PAN_DBG_NO_CACHE;
++
+    if (dev->debug & PAN_DBG_NO_AFBC)
+       dev->has_afbc = false;
+ 
+--- a/src/gallium/drivers/panfrost/pan_shader.c
++++ b/src/gallium/drivers/panfrost/pan_shader.c
+@@ -690,6 +690,87 @@
+ }
+ 
+ /*
++ * tgsi_to_nir() emits deref-based image intrinsics (image_deref_store etc,
++ * on a plain deref_var of an nir_var_image variable - see ttn_emit_image in
++ * tgsi_to_nir.c) and its own finalize step only runs nir_lower_samplers(),
++ * which lowers nir_instr_type_tex and never touches image intrinsics. The
++ * Bifrost backend consumes only the index-based forms (image_load/store,
++ * see bifrost_nir.c) and has no nir_instr_type_deref case in
++ * bi_emit_instr() - so a surviving deref_var trips its "should've been
++ * lowered" assertion. On the GL path this conversion is done by the state
++ * tracker (gl_nir_lower_images(), in libglsl - which the driver doesn't
++ * link) before the driver ever sees the NIR; the graphics TGSI path here
++ * never hit it because none of the TGSI graphics shaders use images.
++ *
++ * This is gl_nir_lower_images()'s non-bindless core, specialised to what
++ * tgsi_to_nir actually produces: a plain deref_var, indexed by
++ * var->data.binding (tgsi_to_nir sets binding to the TGSI image index and
++ * leaves driver_location, which the GL pass keys off, at 0).
++ */
++static bool
++panfrost_lower_tgsi_image_derefs_instr(nir_builder *b, nir_intrinsic_instr *intr,
++                                       UNUSED void *data)
++{
++   switch (intr->intrinsic) {
++   case nir_intrinsic_image_deref_atomic:
++   case nir_intrinsic_image_deref_atomic_swap:
++   case nir_intrinsic_image_deref_load:
++   case nir_intrinsic_image_deref_samples:
++   case nir_intrinsic_image_deref_size:
++   case nir_intrinsic_image_deref_samples_identical:
++   case nir_intrinsic_image_deref_store:
++      break;
++   default:
++      return false;
++   }
++
++   nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
++   /* tgsi_to_nir only ever builds nir_build_deref_var() for images - no
++    * array derefs to walk. Keep that assumption visible. */
++   assert(deref->deref_type == nir_deref_type_var);
++   nir_variable *var = nir_deref_instr_get_variable(deref);
++   assert(var->data.mode == nir_var_image);
++   const struct glsl_type *type = var->type;
++
++   /* tgsi_to_nir sets only `access` on its deref-based image intrinsics;
++    * for the deref form, dim/array/element-type are implied by the
++    * variable's type, so nothing else was needed. The index-based form
++    * carries them explicitly, and nir_rewrite_image_intrinsic() only
++    * copies over format and access - it leaves image_dim/image_array
++    * untouched (they'd read as 0 == GLSL_SAMPLER_DIM_1D, silently wrong
++    * for a 2D image) and preserves the still-unset src/dest type (which
++    * trips pan_nir_lower_image's 32-bit type assertion). Derive all of
++    * them from the variable's type, exactly as glsl_to_nir does at
++    * creation time on the GL path. */
++   nir_intrinsic_set_image_dim(intr, glsl_get_sampler_dim(type));
++   nir_intrinsic_set_image_array(intr, glsl_sampler_type_is_array(type));
++
++   nir_alu_type data_type =
++      nir_get_nir_type_for_glsl_base_type(glsl_get_sampler_result_type(type));
++   if (nir_intrinsic_has_src_type(intr))
++      nir_intrinsic_set_src_type(intr, data_type);
++   if (nir_intrinsic_has_dest_type(intr))
++      nir_intrinsic_set_dest_type(intr, data_type);
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_rewrite_image_intrinsic(intr, nir_imm_int(b, var->data.binding),
++                               nir_image_intrinsic_type_default);
++   nir_intrinsic_set_range_base(intr, 0);
++   return true;
++}
++
++static void
++panfrost_lower_tgsi_image_derefs(nir_shader *nir)
++{
++   if (nir_shader_intrinsics_pass(nir, panfrost_lower_tgsi_image_derefs_instr,
++                                  nir_metadata_control_flow, NULL)) {
++      /* The rewrite leaves the now-unreferenced deref_var instructions
++       * behind; remove them here rather than relying on a later DCE. */
++      NIR_PASS(_, nir, nir_opt_dce);
++   }
++}
++
++/*
+  * Create a compute CSO. As compute kernels do not require variants, they are
+  * precompiled, creating both the uncompiled and compiled shaders now.
+  */
+@@ -698,12 +779,31 @@
+                               const struct pipe_compute_state *cso)
+ {
+    struct panfrost_context *ctx = pan_context(pctx);
+-   struct panfrost_uncompiled_shader *so = panfrost_alloc_shader(cso->prog);
++
++   /* Mirror panfrost_create_shader_state(): accept TGSI by converting it
++    * to NIR, the same way the graphics path does. Previously this path
++    * hard-required NIR - and worse, called panfrost_alloc_shader() on
++    * cso->prog (which nir_serialize()s it as a nir_shader) BEFORE the
++    * "TGSI kernels unsupported" assert, so TGSI input segfaulted inside
++    * nir_serialize before the assert could ever produce its message.
++    * The check now happens first, and the only other IR type gallium
++    * hands drivers here is handled rather than rejected. Ownership is
++    * unchanged: this function already frees so->nir after compilation
++    * regardless of origin, so a tgsi_to_nir()-produced shader (which we
++    * own) is treated identically to a caller-provided one. */
++   nir_shader *nir;
++   if (cso->ir_type == PIPE_SHADER_IR_TGSI) {
++      nir = tgsi_to_nir(cso->prog, pctx->screen, false);
++      panfrost_lower_tgsi_image_derefs(nir);
++   } else {
++      assert(cso->ir_type == PIPE_SHADER_IR_NIR && "unsupported compute IR type");
++      nir = (nir_shader *)cso->prog;
++   }
++
++   struct panfrost_uncompiled_shader *so = panfrost_alloc_shader(nir);
+    struct panfrost_compiled_shader *v = panfrost_alloc_variant(so);
+    memset(v, 0, sizeof *v);
+ 
+-   assert(cso->ir_type == PIPE_SHADER_IR_NIR && "TGSI kernels unsupported");
+-
+    panfrost_shader_get(pctx->screen, &ctx->shaders, &ctx->descs, so,
+                        &ctx->base.debug, v, cso->static_shared_mem);
+ 
+--- a/src/gallium/drivers/panfrost/pan_cmdstream.c
++++ b/src/gallium/drivers/panfrost/pan_cmdstream.c
+@@ -1633,10 +1633,16 @@
+          unsigned ubo_adj = src.ubo - (src.ubo > sysval_ubo ? 1 : 0);
+ 
+          struct pipe_constant_buffer *cb = &buf->cb[ubo_adj];
+-         assert(!cb->buffer && cb->user_buffer &&
+-                "only user buffers use this path");
++         /* A completely unbound UBO (both buffer and user_buffer NULL -
++          * e.g. an explicit set_constant_buffer(..., NULL), valid
++          * gallium semantics meaning "reads as zero") is a different,
++          * safe case from a REAL GPU buffer incorrectly reaching this
++          * CPU-read-only path (which the assert below still catches).
++          * mapped_ubo ending up NULL here is already handled safely by
++          * the "if (!mapped_ubo) return 0;" check right after this. */
++         assert(!cb->buffer && "only user buffers use this path");
+ 
+-         mapped_ubo = cb->user_buffer + cb->buffer_offset;
++         mapped_ubo = cb->user_buffer ? cb->user_buffer + cb->buffer_offset : NULL;
+       }
+ 
+       if (!mapped_ubo)
+--- a/src/gallium/drivers/panfrost/pan_resource.c
++++ b/src/gallium/drivers/panfrost/pan_resource.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <fcntl.h>
++#include <stdlib.h>
+ #include <xf86drm.h>
+ #include "drm-uapi/drm_fourcc.h"
+ 
+@@ -469,6 +470,62 @@
+    free(old_label);
+ }
+ 
++/* kbase: make a resource's BO exportable after the fact. Only ION-backed
++ * (PAN_BO_SHAREABLE) memory has a dma-buf, so a privately allocated BO is
++ * migrated on first export: wait for the GPU, allocate a shareable BO of
++ * the same size, copy, and swap it under the resource (as the transfer-map
++ * discard path does). The layout is unchanged. */
++static bool
++panfrost_resource_migrate_to_shareable(struct panfrost_device *dev,
++                                       struct pipe_context *ctx,
++                                       struct panfrost_resource *rsrc)
++{
++   struct panfrost_bo *old = rsrc->bo;
++
++   if (old->flags & (PAN_BO_SHAREABLE | PAN_BO_SHARED))
++      return true;
++
++   if (ctx) {
++      struct panfrost_context *pctx = pan_context(ctx);
++      panfrost_flush_batches_accessing_rsrc(pctx, rsrc,
++                                            "migrate to shareable for export");
++   }
++   if (!panfrost_bo_wait(old, INT64_MAX, true))
++      return false;
++
++   struct panfrost_bo *new =
++      panfrost_bo_create(dev, panfrost_bo_size(old), PAN_BO_SHAREABLE,
++                         rsrc->owns_label ? old->label : "migrated for export");
++   if (!new)
++      return false;
++
++   panfrost_bo_mmap(old);
++   panfrost_bo_mmap(new);
++   if (!old->ptr.cpu || !new->ptr.cpu) {
++      panfrost_bo_unreference(new);
++      return false;
++   }
++   memcpy(new->ptr.cpu, old->ptr.cpu, panfrost_bo_size(old));
++
++   /* Move every plane resource that shares the old BO (native multi-planar
++    * images keep all planes in one BO), so the planes stay together. */
++   for (unsigned i = 0; i < ARRAY_SIZE(rsrc->image.planes); i++) {
++      if (!rsrc->image.planes[i])
++         continue;
++      struct panfrost_resource *owner =
++         container_of(rsrc->image.planes[i], struct panfrost_resource, plane);
++      if (owner->bo != old)
++         continue;
++      panfrost_bo_reference(new);
++      panfrost_bo_unreference(owner->bo);
++      owner->bo = new;
++      owner->plane.base = new->ptr.gpu;
++      pan_crc_state_set_ptr(&owner->crc_state, &new->ptr);
++   }
++   panfrost_bo_unreference(new); /* drop the creation reference */
++   return true;
++}
++
+ static bool
+ panfrost_resource_get_handle(struct pipe_screen *pscreen,
+                              struct pipe_context *ctx, struct pipe_resource *pt,
+@@ -492,6 +549,10 @@
+    } else if (handle->type == WINSYS_HANDLE_TYPE_KMS) {
+       handle->handle = panfrost_bo_handle(rsrc->bo);
+    } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
++      if (pan_kmod_dev_is_kbase(dev->kmod.dev) &&
++          !panfrost_resource_migrate_to_shareable(dev, ctx, rsrc))
++         return false;
++
+       int fd = panfrost_bo_export(rsrc->bo);
+ 
+       if (fd < 0)
+@@ -538,10 +599,18 @@
+ {
+    struct panfrost_resource *rsrc =
+       pan_resource(util_resource_at_index(prsc, plane));
++   if (!rsrc)
++      return false;
+ 
+-   /* Lowered multi plane resource gets each plane allocated independently. */
+-   if (!rsrc->image.planes[plane])
+-      plane = 0;
++   /* Chained plane resources share one pan_image; report this resource's
++    * own plane of it. Lowered planes have single-plane images. */
++   plane = 0;
++   for (unsigned i = 0; i < ARRAY_SIZE(rsrc->image.planes); i++) {
++      if (rsrc->image.planes[i] == &rsrc->plane) {
++         plane = i;
++         break;
++      }
++   }
+ 
+    switch (param) {
+    case PIPE_RESOURCE_PARAM_STRIDE:
+@@ -554,8 +623,25 @@
+       *value = rsrc->modifier;
+       return true;
+    case PIPE_RESOURCE_PARAM_NPLANES:
+-      *value = util_resource_num(prsc);
++      *value = util_format_get_num_planes(rsrc->image.props.format);
++      return true;
++   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED:
++   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS:
++   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD: {
++      struct winsys_handle handle = {
++         .type = param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED
++                    ? WINSYS_HANDLE_TYPE_SHARED
++                    : param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS
++                         ? WINSYS_HANDLE_TYPE_KMS
++                         : WINSYS_HANDLE_TYPE_FD,
++         .plane = plane,
++      };
++      if (!panfrost_resource_get_handle(pscreen, pctx, &rsrc->base, &handle,
++                                        usage))
++         return false;
++      *value = handle.handle;
+       return true;
++   }
+    default:
+       return false;
+    }
+@@ -564,7 +650,33 @@
+ static void
+ panfrost_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+ {
+-   /* TODO */
++   struct panfrost_context *ctx = pan_context(pctx);
++   struct panfrost_device *dev = pan_device(pctx->screen);
++   struct panfrost_resource *rsrc = pan_resource(prsc);
++
++   /* kbase attaches no fences to shared dma-bufs, so when a shared resource
++    * is handed to another consumer make sure its GPU work is flushed
++    * (and, if requested, complete). Other BOs stay fully asynchronous. */
++   if (!pan_kmod_dev_is_kbase(dev->kmod.dev))
++      return;
++   if (!rsrc->bo || !(rsrc->bo->flags & PAN_BO_SHARED))
++      return;
++
++   panfrost_flush_writer(ctx, rsrc, "flush_resource (kbase implicit sync)");
++
++   /* For X11/DRI3 presentation this blocking wait is no longer needed:
++    * the DRI3 loader arms a Present wait_fence driven by the driver's
++    * own GPU fence, so the SERVER waits instead of the CPU (see
++    * loader_dri3_helper.c). It remains available, env-gated, for shared
++    * resources handed to consumers that go through neither DRI3 nor an
++    * explicit fence (e.g. EGLImages exported to another process). */
++   static int blocking = -1;
++   if (blocking < 0) {
++      const char *env = getenv("PAN_KBASE_IMPLICIT_SYNC_WAIT");
++      blocking = env && atoi(env) != 0;
++   }
++   if (blocking)
++      panfrost_bo_wait(rsrc->bo, INT64_MAX, false);
+ }
+ 
+ static inline bool
+@@ -1062,15 +1174,119 @@
+    return tmp.plane.layout.data_size_B <= memory;
+ }
+ 
++/* planar_fmt is the (possibly multi-planar) format the image layout is
++ * computed with; template->format is what the pipe_resource publicly
++ * reports. They differ only for planes of a natively-created multi-planar
++ * resource, where the public per-plane fields follow the standard gallium
++ * planar-chain convention (each resource in the chain describes its own
++ * plane: plane format, subsampled extent) - which is also exactly what
++ * panfrost_resource_try_setup() already expects base.width0/height0 to be
++ * (it scales them back up by the subsampling it derives from planar_fmt). */
++/* Native multi-planar images: all planes share one BO, with the plane
++ * offsets folded into the slice offsets (the layout imported buffers use).
++ * Planes are created with their own BOs first, then coalesced here. */
++static bool
++panfrost_resource_coalesce_planes(struct panfrost_device *dev,
++                                  struct panfrost_resource *first)
++{
++   uint64_t offsets[MAX_IMAGE_PLANES], total = 0;
++   unsigned n = 0;
++
++   for (struct panfrost_resource *p = first; p && n < ARRAY_SIZE(offsets);
++        p = pan_resource(p->base.next)) {
++      total = ALIGN_POT(total, 4096);
++      offsets[n++] = total;
++      total += p->plane.layout.data_size_B;
++   }
++
++   /* Multi-planar images are made to be shared (video decoders,
++    * compositors); on kbase only shareable memory can be exported, so
++    * allocate them shareable rather than migrating on first export. */
++   uint32_t flags = first->bo->flags & (PAN_BO_SHAREABLE | PAN_BO_DELAY_MMAP);
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
++      flags |= PAN_BO_SHAREABLE;
++
++   struct panfrost_bo *bo = panfrost_bo_create(dev, total, flags, first->bo->label);
++   if (!bo)
++      return false;
++
++   n = 0;
++   for (struct panfrost_resource *p = first; p && n < ARRAY_SIZE(offsets);
++        p = pan_resource(p->base.next), n++) {
++      /* One owner for the shared BO's label: the first plane. */
++      if (n > 0 && p->owns_label) {
++         free((char *)p->bo->label);
++         p->owns_label = false;
++      }
++      panfrost_bo_unreference(p->bo);
++      if (n > 0)
++         panfrost_bo_reference(bo);
++      p->bo = bo;
++      p->plane.base = bo->ptr.gpu;
++      for (unsigned l = 0; l < p->image.props.nr_slices; l++) {
++         p->plane.layout.slices[l].offset_B += offsets[n];
++         if (p->plane.layout.slices[l].crc.size_B)
++            p->plane.layout.slices[l].crc.offset_B += offsets[n];
++      }
++      pan_crc_state_set_ptr(&p->crc_state, &bo->ptr);
++   }
++   return true;
++}
++
+ static struct pipe_resource *
+-panfrost_resource_create_with_modifier(struct pipe_screen *screen,
+-                                       const struct pipe_resource *template,
+-                                       uint64_t modifier, unsigned plane_idx)
++panfrost_resource_create_plane(struct pipe_screen *screen,
++                               const struct pipe_resource *template,
++                               uint64_t modifier, unsigned plane_idx,
++                               enum pipe_format planar_fmt)
+ {
+    PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
+ 
+    struct panfrost_device *dev = pan_device(screen);
+ 
++   /* Native multi-planar creation. panfrost_resource_init_image() models a
++    * planar image as a chain of single-plane resources linked via
++    * base.next, with plane 0 (initialised last) walking that chain to
++    * collect the others - and asserts if the chain is short. Frontends
++    * that lower planar formats (st/mesa: NV12 -> independent R8 + R8G8
++    * resources) never hit this, but a caller handing us the real
++    * multi-planar format in one resource_create() call (util_run_tests'
++    * test_nv12, or anything creating a native NV12 texture) has no way to
++    * build that chain itself: the public entrypoints hardcode
++    * plane_idx = 0. Build it here: create planes N-1 .. 1 through this
++    * same function (each becomes its own panfrost_resource with its own
++    * BO, laid out for that plane, and returns early from init_image), link
++    * them via next, and hand plane 0 a template whose next points at the
++    * chain. The generic pipe_resource_destroy() already walks next and
++    * drops each plane's reference, so ownership needs nothing extra. */
++   struct pipe_resource planar_tmpl;
++   if (plane_idx == 0 && !template->next &&
++       util_format_get_num_planes(planar_fmt) > 1 &&
++       template->format == planar_fmt) {
++      const unsigned nplanes = util_format_get_num_planes(planar_fmt);
++      struct pipe_resource *chain = NULL;
++
++      for (int p = (int)nplanes - 1; p >= 1; p--) {
++         struct pipe_resource tmpl = *template;
++         tmpl.next = chain;
++         /* Public per-plane fields (gallium planar-chain convention). */
++         tmpl.format = util_format_get_plane_format(planar_fmt, p);
++         tmpl.width0 = util_format_get_plane_width(planar_fmt, p, template->width0);
++         tmpl.height0 = util_format_get_plane_height(planar_fmt, p, template->height0);
++         struct pipe_resource *plane =
++            panfrost_resource_create_plane(screen, &tmpl, modifier, p, planar_fmt);
++         if (!plane) {
++            pipe_resource_reference(&chain, NULL);
++            return NULL;
++         }
++         chain = plane;
++      }
++
++      planar_tmpl = *template;
++      planar_tmpl.next = chain;
++      planar_tmpl.format = util_format_get_plane_format(planar_fmt, 0);
++      template = &planar_tmpl;
++   }
++
+    struct panfrost_resource *so = CALLOC_STRUCT(panfrost_resource);
+ 
+    if (!so)
+@@ -1098,7 +1314,7 @@
+       so->modifier_constant = true;
+    }
+ 
+-   panfrost_resource_setup(screen, so, modifier, template->format, plane_idx);
++   panfrost_resource_setup(screen, so, modifier, planar_fmt, plane_idx);
+ 
+    if (dev->ro && (template->bind & PIPE_BIND_SCANOUT)) {
+       struct winsys_handle handle;
+@@ -1107,8 +1323,8 @@
+        * compression (not framebuffer compression!), which doesn't
+        * make sense to share across processes.
+        */
+-      assert(util_format_get_blockwidth(template->format) == 1);
+-      assert(util_format_get_blockheight(template->format) == 1);
++      assert(util_format_get_blockwidth(planar_fmt) == 1);
++      assert(util_format_get_blockheight(planar_fmt) == 1);
+ 
+       /* Present a resource with similar dimensions that, if allocated
+        * as a linear image, is big enough to fit the resource in the
+@@ -1127,14 +1343,14 @@
+        */
+       unsigned stride = pan_image_get_wsi_row_pitch(&so->image, plane_idx, 0);
+       enum pipe_format plane_format =
+-         util_format_get_plane_format(template->format, plane_idx);
++         util_format_get_plane_format(planar_fmt, plane_idx);
+       unsigned width = stride / util_format_get_blocksize(plane_format);
+       unsigned size = so->plane.layout.data_size_B;
+       unsigned effective_rows = DIV_ROUND_UP(size, stride);
+ 
+       struct pipe_resource scanout_tmpl = {
+          .target = so->base.target,
+-         .format = template->format,
++         .format = planar_fmt,
+          .width0 = width,
+          .height0 = effective_rows,
+          .depth0 = 1,
+@@ -1198,9 +1414,26 @@
+    if (template->bind & PIPE_BIND_INDEX_BUFFER)
+       so->index_cache = CALLOC_STRUCT(pan_minmax_cache);
+ 
++   /* AFBC planes keep separate BOs: their headers were initialised in
++    * place above and would not survive the move. */
++   if (template == &planar_tmpl && !dev->ro && !drm_is_afbc(so->modifier) &&
++       !panfrost_resource_coalesce_planes(dev, so)) {
++      panfrost_resource_destroy(screen, &so->base);
++      return NULL;
++   }
++
+    return (struct pipe_resource *)so;
+ }
+ 
++static struct pipe_resource *
++panfrost_resource_create_with_modifier(struct pipe_screen *screen,
++                                       const struct pipe_resource *template,
++                                       uint64_t modifier, unsigned plane_idx)
++{
++   return panfrost_resource_create_plane(screen, template, modifier, plane_idx,
++                                         template->format);
++}
++
+ /* Default is to create a resource as don't care */
+ 
+ static struct pipe_resource *
+--- a/src/panfrost/lib/pan_format.h
++++ b/src/panfrost/lib/pan_format.h
+@@ -106,6 +106,13 @@
+    case PIPE_FORMAT_R8_G8B8_422_UNORM:
+    case PIPE_FORMAT_R8_B8G8_422_UNORM:
+    case PIPE_FORMAT_Y8_U8V8_422_UNORM:
++   /* NV12 / NV21 (PIPE_FORMAT_NV12/NV21 are aliases of these): the 4:2:0
++    * YUV members of this same 2-plane 8-bit family - Y plane, then an
++    * interleaved 2-byte UV plane - which were missing while their RGB
++    * twins (R8_G8B8_420 / R8_B8G8_420) and the 4:2:2 YUV variant above
++    * were listed, so they fell through to the single-plane assert. */
++   case PIPE_FORMAT_Y8_U8V8_420_UNORM:
++   case PIPE_FORMAT_Y8_V8U8_420_UNORM:
+       return plane_idx ? 2 : 1;
+    case PIPE_FORMAT_X6G10_X6B10X6R10_420_UNORM:
+       return plane_idx ? 4 : 2;

@@ -1,0 +1,219 @@
+--- a/src/gallium/drivers/panfrost/meson.build
++++ b/src/gallium/drivers/panfrost/meson.build
+@@ -125,3 +125,45 @@
+   compile_args : compile_args_panfrost,
+   link_with : [libpanfrost, libpanfrostwinsys, libpanfrost_shared, libpanfrost_compiler, libpanfrost_decode, libpanfrost_lib],
+ )
++
++# kbase backend tests. Not built by default:
++#   ninja -C build kbase_screen_test kbase_render_test
++kbase_screen_test = executable(
++  'kbase_screen_test',
++  ['kbase_screen_test_v3.c'],
++  include_directories : [
++    panfrost_includes,
++    inc_gallium,
++    inc_gallium_aux,
++    include_directories('../../winsys/panfrost/drm'),
++  ],
++  dependencies : [
++    driver_panfrost,
++    idep_mesautil,
++    idep_xmlconfig,
++  ],
++  link_with : [libgallium],
++  link_args : ['-Wl,--build-id=sha1'],
++  build_by_default : false,
++)
++
++# Runs mesa's gallium self-tests (util_run_tests) on a kbase-backed screen.
++kbase_render_test = executable(
++  'kbase_render_test',
++  ['kbase_render_test.c'],
++  include_directories : [
++    panfrost_includes,
++    inc_gallium,
++    inc_gallium_aux,
++    include_directories('../../winsys/panfrost/drm'),
++  ],
++  dependencies : [
++    driver_panfrost,
++    idep_mesautil,
++    idep_xmlconfig,
++    idep_compiler,
++  ],
++  link_with : [libgallium],
++  link_args : ['-Wl,--build-id=sha1'],
++  build_by_default : false,
++)
+--- /dev/null
++++ b/src/gallium/drivers/panfrost/kbase_screen_test_v3.c
+@@ -0,0 +1,78 @@
++/*
++ * kbase_screen_test.c - creates a panfrost screen over the kbase backend
++ * (pan_kmod dispatcher -> kbase_kmod.c) via panfrost_drm_screen_create()
++ * with a properly initialised driOptionCache, and prints the screen's
++ * name and vendor. First smoke test of the backend without any rendering.
++ *
++ * Run: ./build/src/gallium/drivers/panfrost/kbase_screen_test
++ */
++
++#include <fcntl.h>
++#include <stdio.h>
++#include <unistd.h>
++
++#include "pipe/p_screen.h"
++#include "util/driconf.h"
++#include "util/macros.h"
++#include "util/xmlconfig.h"
++
++#include "panfrost_drm_public.h"
++
++/* Verbatim copy of the pattern in drm_helper.h's GALLIUM_PANFROST block -
++ * same driconf table the real driver uses, not a stand-in. */
++static const driOptionDescription pan_driconf[] = {
++#include "driinfo_panfrost.h"
++};
++
++int
++main(void)
++{
++   const char *path = "/dev/mali0";
++
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++   if (fd < 0) {
++      fprintf(stderr, "open(%s) failed\n", path);
++      return 1;
++   }
++
++   driOptionCache option_info;
++   driOptionCache option_cache;
++   driParseOptionInfo(&option_info, pan_driconf, ARRAY_SIZE(pan_driconf));
++   driParseConfigFiles(&option_cache, &option_info,
++                       &(driConfigFileParseParams){.driverName = "panfrost"});
++
++   struct pipe_screen_config config = {
++      .driver_name_is_inferred = false,
++      .options = &option_cache,
++      .options_info = &option_info,
++   };
++
++   struct pipe_screen *screen = panfrost_drm_screen_create(fd, &config);
++   if (!screen) {
++      fprintf(stderr,
++             "panfrost_drm_screen_create failed - check dmesg/logcat: "
++             "panfrost_create_screen() logs \"Unsupported model %%X\" via "
++             "debug_printf if pan_kmod's props (gpu_id in particular) "
++             "weren't populated correctly by kbase_query_props(). If it "
++             "didn't even get that far, check that "
++             "pan_kmod_dispatcher.patch is applied (that's what teaches "
++             "pan_kmod_dev_create to recognize a kbase fd at all).\n");
++      driDestroyOptionCache(&option_cache);
++      driDestroyOptionInfo(&option_info);
++      close(fd);
++      return 1;
++   }
++
++   printf("screen created successfully:\n");
++   printf("  name:   %s\n", screen->get_name(screen));
++   printf("  vendor: %s\n", screen->get_vendor(screen));
++
++   screen->destroy(screen);
++   driDestroyOptionCache(&option_cache);
++   driDestroyOptionInfo(&option_info);
++   close(fd);
++
++   printf("\nRESULT: SUCCESS. panfrost_create_screen() -> pan_kmod -> "
++         "kbase_kmod works end to end against /dev/mali0.\n");
++   return 0;
++}
+--- /dev/null
++++ b/src/gallium/drivers/panfrost/kbase_render_test.c
+@@ -0,0 +1,87 @@
++/*
++ * kbase_render_test.c - runs mesa's gallium self-tests (util_run_tests())
++ * on a panfrost screen created over the kbase backend: shader compilation,
++ * draws with pixel readback, sync_file fences, texture barriers, compute
++ * dispatches and an NV12 test. Each prints "Test(<name>) = pass/fail";
++ * util_run_tests() exits the process when done.
++ *
++ * Run: ./build/src/gallium/drivers/panfrost/kbase_render_test
++ * Expected: 8 passes; test_nv12 fails on resource_get_param (KMS handles
++ * do not exist on kbase).
++ */
++
++#include <fcntl.h>
++#include <stdio.h>
++#include <unistd.h>
++
++#include "pipe/p_screen.h"
++#include "util/driconf.h"
++#include "util/macros.h"
++#include "util/u_tests.h"
++#include "util/xmlconfig.h"
++
++#include "compiler/glsl_types.h"
++#include "panfrost_drm_public.h"
++
++static const driOptionDescription pan_driconf[] = {
++#include "driinfo_panfrost.h"
++};
++
++int
++main(void)
++{
++   const char *path = "/dev/mali0";
++
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++   if (fd < 0) {
++      fprintf(stderr, "open(%s) failed\n", path);
++      return 1;
++   }
++
++   driOptionCache option_info;
++   driOptionCache option_cache;
++   driParseOptionInfo(&option_info, pan_driconf, ARRAY_SIZE(pan_driconf));
++   driParseConfigFiles(&option_cache, &option_info,
++                       &(driConfigFileParseParams){.driverName = "panfrost"});
++
++   struct pipe_screen_config config = {
++      .driver_name_is_inferred = false,
++      .options = &option_cache,
++      .options_info = &option_info,
++   };
++
++   struct pipe_screen *screen = panfrost_drm_screen_create(fd, &config);
++   if (!screen) {
++      fprintf(stderr, "panfrost_drm_screen_create failed - run "
++             "kbase_screen_test first to confirm basic screen creation "
++             "still works before debugging this.\n");
++      driDestroyOptionCache(&option_cache);
++      driDestroyOptionInfo(&option_info);
++      close(fd);
++      return 1;
++   }
++
++   printf("screen created (%s / %s), handing off to util_run_tests()...\n",
++         screen->get_name(screen), screen->get_vendor(screen));
++   fflush(stdout);
++
++   /* A normal EGL/DRI-loaded application gets this for free from
++    * dri_screen.c's own setup, which panfrost_drm_screen_create() called
++    * directly (bypassing EGL/DRI entirely, same as everything else this
++    * test does) skips. Without it, glsl_type_cache.users stays at 0 and
++    * any NIR compile touching glsl_array_type() - which happens to be
++    * something none of the tests before null_sampler_view needed -
++    * asserts. Confirmed by checking every caller in the whole tree: only
++    * src/panfrost/clc/pan_compile.c (a standalone tool with no EGL/DRI
++    * stack around it either) calls this explicitly, which is exactly
++    * our situation too. */
++   glsl_type_singleton_init_or_ref();
++
++   /* util_run_tests() calls exit() internally - nothing after this line
++    * runs on the success path. Cleanup of screen/fd/option caches is
++    * intentionally omitted since the process exits from inside this
++    * call either way. */
++   util_run_tests(screen);
++
++   return 0; /* unreached on the normal path */
++}

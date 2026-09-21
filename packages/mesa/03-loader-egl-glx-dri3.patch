@@ -1,0 +1,726 @@
+--- a/src/loader/loader.c
++++ b/src/loader/loader.c
+@@ -50,6 +50,41 @@
+ #include "util/drm_is_nouveau.h"
+ #include "util/libdrm.h"
+ #include "util/os_file.h"
++
++/* See loader_is_kbase_fd() in loader.h.
++ *
++ * Detection must be side-effect free: kbase's VERSION_CHECK ioctl (the
++ * obvious probe) can succeed only ONCE per open file - the kernel moves
++ * the file from NEED_VSN to VSN_IN_PROGRESS with a cmpxchg and answers
++ * -EPERM ever after (kbase_file_set_api_version, mali_kbase_core_linux.c).
++ * A dup()'d fd shares that file, and the EGL path probes the same file
++ * from three layers (loader, pipe-loader, pan_kmod), so an ioctl probe
++ * only works for whichever layer asks first. Comparing the fd's device
++ * number against /dev/mali0's has no side effects and survives dup(). */
++bool
++loader_is_kbase_fd(int fd)
++{
++   static dev_t kbase_rdev;
++   static int kbase_rdev_state; /* 0 = unknown, 1 = found, -1 = absent */
++   struct stat st;
++
++   if (fd < 0)
++      return false;
++
++   if (kbase_rdev_state == 0) {
++      struct stat node;
++      if (stat("/dev/mali0", &node) == 0 && S_ISCHR(node.st_mode)) {
++         kbase_rdev = node.st_rdev;
++         kbase_rdev_state = 1;
++      } else {
++         kbase_rdev_state = -1;
++      }
++   }
++   if (kbase_rdev_state < 0)
++      return false;
++
++   return fstat(fd, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == kbase_rdev;
++}
+ #include "util/os_misc.h"
+ #include "util/u_debug.h"
+ #include "git_sha1.h"
+@@ -307,6 +342,12 @@
+    drmDevicePtr dev_ptr;
+    bool ret;
+ 
++   /* A kbase device is render-capable by definition (it's the GPU's own
++    * node, there's nothing else it could be), and drmGetDevice2() below
++    * would fail on it. */
++   if (loader_is_kbase_fd(fd))
++      return true;
++
+    if (drmGetDevice2(fd, 0, &dev_ptr) != 0)
+       return false;
+ 
+@@ -726,6 +767,11 @@
+ bool
+ loader_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
+ {
++   /* A kbase node is never a PCI device, and the DRM lookup below would
++    * only fail (with a warning) trying to find out. */
++   if (loader_is_kbase_fd(fd))
++      return false;
++
+ #ifdef __linux__
+    /* Implementation without causing full enumeration of DRM devices. */
+    if (loader_get_linux_pci_id_for_fd(fd, vendor_id, chip_id))
+@@ -738,6 +784,8 @@
+ char *
+ loader_get_device_name_for_fd(int fd)
+ {
++   if (loader_is_kbase_fd(fd))
++      return strdup("/dev/mali0");
+    return drmGetDeviceNameFromFd2(fd);
+ }
+ 
+@@ -792,6 +840,14 @@
+          return strdup(override);
+    }
+ 
++   /* Not a DRM node, so neither the PCI nor the drmGetVersion() lookup
++    * below can name it - but the answer is known: panfrost, via its
++    * kbase_kmod backend (see pipe_loader_drm.c for the same branch one
++    * layer down). Checked before the driconf lookup, which would itself
++    * try (and warn about) those DRM lookups on this fd. */
++   if (loader_is_kbase_fd(fd))
++      return strdup("panfrost");
++
+ #if defined(USE_DRICONF)
+    driver = loader_get_dri_config_driver(fd);
+    if (driver)
+--- a/src/loader/loader.h
++++ b/src/loader/loader.h
+@@ -56,6 +56,14 @@
+ bool
+ loader_is_device_render_capable(int fd);
+ 
++/* True if fd is an ARM kbase device (/dev/mali0-style, the proprietary
++ * Mali kernel driver interface) rather than a DRM node. Detected with a
++ * single kbase version-check ioctl; a zeroed request is intentional (the
++ * kernel ignores an unknown major and just reports what it supports). Such
++ * an fd is served by the panfrost driver via its kbase_kmod backend. */
++bool
++loader_is_kbase_fd(int fd);
++
+ char *
+ loader_get_render_node(dev_t device);
+ 
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+@@ -38,6 +38,18 @@
+ #include <fcntl.h>
+ 
+ #include "loader.h"
++
++/* /dev/mali0 (proprietary ARM kbase interface, used on stock Android
++ * kernels without drm/panfrost or drm/panthor bound to the GPU) isn't a
++ * DRM node, so loader_get_driver_for_fd() below - which resolves the
++ * driver name via drmGetVersion() - fails on it outright. Detection is
++ * loader_is_kbase_fd(): a side-effect-free device-number check (see its
++ * comment in loader.c for why an ioctl probe can't be used here). */
++static bool
++fd_is_kbase_device(int fd)
++{
++   return loader_is_kbase_fd(fd);
++}
+ #include "target-helpers/drm_helper_public.h"
+ #include "frontend/drm_driver.h"
+ #include "pipe_loader_priv.h"
+@@ -136,6 +148,8 @@
+ 
+    if (zink)
+       ddev->base.driver_name = strdup("zink");
++   else if (fd_is_kbase_device(fd))
++      ddev->base.driver_name = strdup("panfrost");
+    else
+       ddev->base.driver_name = loader_get_driver_for_fd(fd);
+    if (!ddev->base.driver_name)
+@@ -246,6 +260,27 @@
+       j++;
+    }
+ 
++   /* The ARM kbase node is not a DRM render node; enumerate it too so that
++    * consumers without a window system (rusticl, GBM) can find the GPU. */
++   if (!zink && access("/dev/mali0", R_OK | W_OK) == 0) {
++      struct pipe_loader_device *dev;
++
++      fd = loader_open_device("/dev/mali0");
++      if (fd >= 0) {
++         if (!pipe_loader_drm_probe_fd_nodup(&dev, fd, zink)) {
++            close(fd);
++         } else {
++            if (j < ndev) {
++               devs[j] = dev;
++            } else {
++               close(fd);
++               dev->ops->release(&dev);
++            }
++            j++;
++         }
++      }
++   }
++
+    return j;
+ }
+ 
+--- a/src/egl/main/egldevice.c
++++ b/src/egl/main/egldevice.c
+@@ -39,6 +39,12 @@
+ #include "egltypedefs.h"
+ #include "egldriver.h"
+ 
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "loader.h"
++
+ struct _egl_device {
+    _EGLDevice *Next;
+ 
+@@ -54,10 +60,114 @@
+    drmDevicePtr device;
+ #endif
+ 
++   /* This is the ARM kbase (/dev/mali0) GPU, presented through a synthetic
++    * drmDevice we allocate ourselves (see _eglAddKbaseDevice) so the
++    * platform code - which only ever looks at device->nodes[] and
++    * available_nodes - works unchanged. Must be freed by us, never by
++    * drmFreeDevice(), since libdrm didn't allocate it. */
++   EGLBoolean kbase;
++
+    /* Cache for EGL_EXT_device_query_name and EXT_device_persistent_id. */
+    struct egl_device_info device_info;
+ };
+ 
++#ifdef HAVE_LIBDRM
++#define KBASE_DEVICE_NODE "/dev/mali0"
++
++static int _eglAddDRMDevice(drmDevicePtr device);
++
++static void
++_eglFreeKbaseDevice(drmDevicePtr device)
++{
++   if (!device)
++      return;
++   if (device->nodes) {
++      for (int i = 0; i < DRM_NODE_MAX; i++)
++         free(device->nodes[i]);
++      free(device->nodes);
++   }
++   if (device->deviceinfo.platform)
++      free(device->deviceinfo.platform->compatible);
++   free(device->businfo.platform);
++   free(device->deviceinfo.platform);
++   free(device);
++}
++
++/* Builds a drmDevice describing the kbase GPU: a platform-bus device whose
++ * only node is the render node KBASE_DEVICE_NODE. Everything downstream
++ * (platform_surfaceless's probe loop, _eglFindDevice, the EXT_device_drm
++ * queries) only consults nodes[]/available_nodes/bustype/businfo, all of
++ * which are the public, stable libdrm ABI - so the platforms need no
++ * kbase-specific code at all. drmDevicesEqual() compares platform devices
++ * by businfo.platform->fullname, hence the fixed name. */
++static drmDevicePtr
++_eglAllocKbaseDevice(void)
++{
++   drmDevicePtr device = calloc(1, sizeof(*device));
++   if (!device)
++      return NULL;
++
++   device->nodes = calloc(DRM_NODE_MAX, sizeof(char *));
++   device->businfo.platform = calloc(1, sizeof(drmPlatformBusInfo));
++   device->deviceinfo.platform = calloc(1, sizeof(drmPlatformDeviceInfo));
++   if (!device->nodes || !device->businfo.platform ||
++       !device->deviceinfo.platform)
++      goto fail;
++
++   device->nodes[DRM_NODE_RENDER] = strdup(KBASE_DEVICE_NODE);
++   if (!device->nodes[DRM_NODE_RENDER])
++      goto fail;
++
++   device->available_nodes = 1 << DRM_NODE_RENDER;
++   device->bustype = DRM_BUS_PLATFORM;
++   snprintf(device->businfo.platform->fullname,
++            sizeof(device->businfo.platform->fullname), "kbase-mali0");
++   /* compatible: a NULL-terminated string list; empty is fine. */
++   device->deviceinfo.platform->compatible = calloc(1, sizeof(char *));
++   if (!device->deviceinfo.platform->compatible)
++      goto fail;
++
++   return device;
++
++fail:
++   _eglFreeKbaseDevice(device);
++   return NULL;
++}
++
++/* Appends the kbase GPU to the device list if the node exists and it isn't
++ * already there. Returns like _eglAddDRMDevice: <0 error, 0 added, 1 present. */
++static int
++_eglAddKbaseDevice(void)
++{
++   _EGLDevice *dev = _eglGlobal.DeviceList;
++
++   assert(dev);
++   for (; dev; dev = dev->Next)
++      if (dev->kbase)
++         return 1;
++
++   if (access(KBASE_DEVICE_NODE, R_OK | W_OK) != 0)
++      return -1;
++
++   drmDevicePtr device = _eglAllocKbaseDevice();
++   if (!device)
++      return -1;
++
++   int ret = _eglAddDRMDevice(device);
++   if (ret != 0) {
++      _eglFreeKbaseDevice(device);
++      return ret;
++   }
++
++   /* _eglAddDRMDevice appended it; find the tail and mark it. */
++   for (dev = _eglGlobal.DeviceList; dev->Next; dev = dev->Next)
++      ;
++   assert(dev->device == device);
++   dev->kbase = EGL_TRUE;
++   return 0;
++}
++#endif
++
+ void
+ _eglFiniDevice(void)
+ {
+@@ -79,7 +189,10 @@
+ 
+ #ifdef HAVE_LIBDRM
+       assert(_eglDeviceSupports(dev, _EGL_DEVICE_DRM));
+-      drmFreeDevice(&dev->device);
++      if (dev->kbase)
++         _eglFreeKbaseDevice(dev->device);
++      else
++         drmFreeDevice(&dev->device);
+ #endif
+       free(dev->device_info.vendor_name);
+       free(dev->device_info.renderer_name);
+@@ -201,6 +314,17 @@
+ #ifdef HAVE_LIBDRM
+    drmDevicePtr device;
+ 
++   /* drmGetDevice2() can't identify a kbase fd; match it by flag instead. */
++   if (loader_is_kbase_fd(fd)) {
++      while (dev->Next) {
++         dev = dev->Next;
++         if (dev->kbase)
++            goto out;
++      }
++      dev = NULL;
++      goto out;
++   }
++
+    if (drmGetDevice2(fd, 0, &device) != 0) {
+       dev = NULL;
+       goto out;
+@@ -454,6 +578,9 @@
+       if (ret >= 0)
+          count++;
+    }
++
++   if (_eglAddKbaseDevice() == 0)
++      count++;
+ #endif
+ 
+    return count;
+--- a/src/egl/drivers/dri2/platform_x11_dri3.c
++++ b/src/egl/drivers/dri2/platform_x11_dri3.c
+@@ -528,6 +528,17 @@
+ {
+    dri2_dpy->fd_render_gpu =
+       x11_dri3_open(dri2_dpy->conn, dri2_dpy->screen->root, 0);
++
++   /* Servers that implement DRI3 without a DRM device (e.g. termux-x11)
++    * fail DRI3Open. If the ARM kbase node exists, open it directly and use
++    * DRI3 for pixmap sharing only. */
++   if (dri2_dpy->fd_render_gpu < 0 && !swrast &&
++       access("/dev/mali0", R_OK | W_OK) == 0) {
++      dri2_dpy->fd_render_gpu = loader_open_device("/dev/mali0");
++      if (dri2_dpy->fd_render_gpu >= 0)
++         _eglLog(_EGL_DEBUG, "DRI3: server offered no device; using /dev/mali0");
++   }
++
+    if (dri2_dpy->fd_render_gpu < 0) {
+       int conn_error = xcb_connection_has_error(dri2_dpy->conn);
+       if (!swrast) {
+--- a/src/glx/dri3_glx.c
++++ b/src/glx/dri3_glx.c
+@@ -474,6 +474,16 @@
+    psc->fd_display_gpu = -1;
+ 
+    psc->fd_render_gpu = x11_dri3_open(c, RootWindow(priv->dpy, screen), None);
++
++   /* Servers that implement DRI3 without a DRM device (e.g. termux-x11)
++    * fail DRI3Open. If the ARM kbase node exists, open it directly and use
++    * DRI3 for pixmap sharing only. */
++   if (psc->fd_render_gpu < 0 && access("/dev/mali0", R_OK | W_OK) == 0) {
++      psc->fd_render_gpu = loader_open_device("/dev/mali0");
++      if (psc->fd_render_gpu >= 0)
++         InfoMessageF("DRI3: server offered no device; using /dev/mali0\n");
++   }
++
+    if (psc->fd_render_gpu < 0) {
+       int conn_error = xcb_connection_has_error(c);
+ 
+--- a/src/gallium/frontends/dri/loader_dri3_helper.c
++++ b/src/gallium/frontends/dri/loader_dri3_helper.c
+@@ -22,6 +22,7 @@
+  */
+ 
+ #include <fcntl.h>
++#include <errno.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <string.h>
+@@ -43,6 +44,172 @@
+ #include "drm-uapi/drm_fourcc.h"
+ #include "dri_screen.h"
+ #include "dri_util.h"
++#include "loader.h"
++#include <poll.h>
++#include "c11/threads.h"
++
++/* Deferred presentation.
++ *
++ * DRM drivers attach the rendering fence to a shared dma-buf, so the X
++ * server waits before compositing (implicit sync). kbase attaches no such
++ * fence, and Present's shm wait_fence cannot be observed asynchronously by
++ * the server. Instead, the PresentPixmap request is handed, together with
++ * the frame's GPU fence (dri_create_fence + dri_get_fence_fd), to a worker
++ * thread that sends it once the fence signals. The caller never blocks,
++ * presents stay in order, and the server only sees finished frames. */
++
++static int
++loader_dri3_deferred_present_thread(void *arg)
++{
++   struct loader_dri3_drawable *draw = arg;
++
++   mtx_lock(&draw->deferred.mtx);
++   for (;;) {
++      while (draw->deferred.head == draw->deferred.tail && !draw->deferred.exit)
++         cnd_wait(&draw->deferred.cnd, &draw->deferred.mtx);
++      if (draw->deferred.head == draw->deferred.tail && draw->deferred.exit)
++         break;
++
++      __typeof__(draw->deferred.queue[0]) e = draw->deferred.queue[draw->deferred.head];
++      draw->deferred.head = (draw->deferred.head + 1) % ARRAY_SIZE(draw->deferred.queue);
++      draw->deferred.in_progress++;
++      mtx_unlock(&draw->deferred.mtx);
++
++      if (e.fence_fd >= 0) {
++         struct pollfd pfd = {.fd = e.fence_fd, .events = POLLIN};
++         while (poll(&pfd, 1, -1) < 0 && errno == EINTR)
++            ;
++         close(e.fence_fd);
++      }
++
++      /* Damage is snapshotted per present so a later swap cannot alter it. */
++      xcb_xfixes_region_t update = 0;
++      if (e.n_rects) {
++         update = xcb_generate_id(draw->conn);
++         xcb_xfixes_create_region(draw->conn, update, e.n_rects, e.rects);
++      }
++      xcb_present_pixmap(draw->conn, e.drawable, e.pixmap, e.serial,
++                         0 /* valid */, update, 0, 0, None /* target_crtc */,
++                         None /* wait_fence */, e.idle_fence, e.options,
++                         e.target_msc, e.divisor, e.remainder, 0, NULL);
++      if (update)
++         xcb_xfixes_destroy_region(draw->conn, update);
++      xcb_flush(draw->conn);
++
++      mtx_lock(&draw->deferred.mtx);
++      draw->deferred.in_progress--;
++      cnd_broadcast(&draw->deferred.cnd);
++   }
++   mtx_unlock(&draw->deferred.mtx);
++   return 0;
++}
++
++/* Block until every queued present has been sent. Used before a buffer's
++ * pixmap/fence is destroyed and at drawable teardown. */
++static void
++loader_dri3_deferred_present_drain(struct loader_dri3_drawable *draw)
++{
++   if (!draw->deferred.started)
++      return;
++   mtx_lock(&draw->deferred.mtx);
++   while (draw->deferred.head != draw->deferred.tail || draw->deferred.in_progress)
++      cnd_wait(&draw->deferred.cnd, &draw->deferred.mtx);
++   mtx_unlock(&draw->deferred.mtx);
++}
++
++static void
++loader_dri3_deferred_present_fini(struct loader_dri3_drawable *draw)
++{
++   if (!draw->deferred.started)
++      return;
++   loader_dri3_deferred_present_drain(draw);
++   mtx_lock(&draw->deferred.mtx);
++   draw->deferred.exit = true;
++   cnd_broadcast(&draw->deferred.cnd);
++   mtx_unlock(&draw->deferred.mtx);
++   thrd_join(draw->deferred.thread, NULL);
++   draw->deferred.started = false;
++}
++
++static bool
++loader_dri3_deferred_present_enabled(struct loader_dri3_drawable *draw)
++{
++   /* Decide once: only for a kbase device (a DRM driver already fences the
++    * dma-buf implicitly); LOADER_DRI3_DEFERRED_PRESENT=1/0 forces it. */
++   if (!draw->deferred.enabled) {
++      const char *env = getenv("LOADER_DRI3_DEFERRED_PRESENT");
++      bool on = env ? atoi(env) != 0
++                    : loader_is_kbase_fd(draw->dri_screen_render_gpu->fd);
++      draw->deferred.enabled = on ? 1 : 2;
++   }
++   return draw->deferred.enabled == 1;
++}
++
++/* A sync_file fd that signals when everything the context has flushed so
++ * far completes on the GPU, or -1 if the driver can't provide one. */
++static int
++loader_dri3_gpu_fence_fd(struct loader_dri3_drawable *draw)
++{
++   struct dri_context *ctx = draw->vtable->get_dri_context(draw);
++   if (!ctx)
++      return -1;
++   void *fence = dri_create_fence(ctx);
++   if (!fence)
++      return -1;
++   int fd = dri_get_fence_fd(draw->dri_screen_render_gpu, fence);
++   dri_destroy_fence(draw->dri_screen_render_gpu, fence);
++   return fd;
++}
++
++/* Queue a present to be sent once the GPU fence signals. Returns false if
++ * it couldn't be deferred (caller then presents directly). */
++static bool
++loader_dri3_deferred_present_queue(struct loader_dri3_drawable *draw,
++                                   xcb_pixmap_t pixmap, uint32_t serial,
++                                   const xcb_rectangle_t *rects, unsigned n_rects,
++                                   xcb_sync_fence_t idle_fence, uint32_t options,
++                                   uint64_t target_msc, uint64_t divisor,
++                                   uint64_t remainder)
++{
++   int fd = loader_dri3_gpu_fence_fd(draw);
++   if (fd < 0)
++      return false;
++
++   if (!draw->deferred.started) {
++      mtx_init(&draw->deferred.mtx, mtx_plain);
++      cnd_init(&draw->deferred.cnd);
++      draw->deferred.head = draw->deferred.tail = 0;
++      draw->deferred.in_progress = 0;
++      draw->deferred.exit = false;
++      if (thrd_create(&draw->deferred.thread, loader_dri3_deferred_present_thread,
++                      draw) != thrd_success) {
++         close(fd);
++         return false;
++      }
++      draw->deferred.started = true;
++   }
++
++   mtx_lock(&draw->deferred.mtx);
++   while ((draw->deferred.tail + 1) % ARRAY_SIZE(draw->deferred.queue) == draw->deferred.head)
++      cnd_wait(&draw->deferred.cnd, &draw->deferred.mtx);
++   __typeof__(draw->deferred.queue[0]) *e = &draw->deferred.queue[draw->deferred.tail];
++   e->fence_fd = fd;
++   e->drawable = draw->drawable;
++   e->pixmap = pixmap;
++   e->serial = serial;
++   e->n_rects = (uint16_t)n_rects;
++   if (n_rects)
++      memcpy(e->rects, rects, n_rects * sizeof(*rects));
++   e->idle_fence = idle_fence;
++   e->options = options;
++   e->target_msc = target_msc;
++   e->divisor = divisor;
++   e->remainder = remainder;
++   draw->deferred.tail = (draw->deferred.tail + 1) % ARRAY_SIZE(draw->deferred.queue);
++   cnd_broadcast(&draw->deferred.cnd);
++   mtx_unlock(&draw->deferred.mtx);
++   return true;
++}
+ 
+ /**
+  * A cached blit context.
+@@ -293,7 +460,25 @@
+       break;
+ 
+    default:
+-      draw->max_num_back = 2;
++      /* Copy mode (a compositing server). Two back buffers keeps latency
++       * low on a desktop, but bounds throughput to ~one frame ahead of
++       * the compositor's round trip. With deferred presentation active
++       * (buffers are reused only after IdleNotify either way) a third is
++       * safe and lets the app pipeline further. LOADER_DRI3_NUM_BACK=2..4
++       * overrides. */
++      {
++         static int env_num_back = -1;
++         if (env_num_back < 0) {
++            const char *env = getenv("LOADER_DRI3_NUM_BACK");
++            env_num_back = env ? atoi(env) : 0;
++         }
++         if (env_num_back >= 2 && env_num_back <= LOADER_DRI3_MAX_BACK)
++            draw->max_num_back = env_num_back;
++         else if (draw->deferred.enabled == 1)
++            draw->max_num_back = 3;
++         else
++            draw->max_num_back = 2;
++      }
+    }
+ }
+ 
+@@ -341,6 +526,8 @@
+    if (!buffer)
+       return;
+ 
++   loader_dri3_deferred_present_drain(draw);
++
+    if (buffer->own_pixmap)
+       xcb_free_pixmap(draw->conn, buffer->pixmap);
+    xcb_sync_destroy_fence(draw->conn, buffer->sync_fence);
+@@ -361,6 +548,8 @@
+ {
+    int i;
+ 
++   loader_dri3_deferred_present_fini(draw);
++
+    driDestroyDrawable(draw->dri_drawable);
+ 
+    for (i = 0; i < ARRAY_SIZE(draw->buffers); i++)
+@@ -1168,13 +1357,9 @@
+       back->busy = 1;
+       back->last_swap = draw->send_sbc;
+ 
+-      if (!draw->region) {
+-         draw->region = xcb_generate_id(draw->conn);
+-         xcb_xfixes_create_region(draw->conn, draw->region, 0, NULL);
+-      }
+-
+       xcb_xfixes_region_t region = 0;
+       xcb_rectangle_t xcb_rects[64];
++      unsigned n_xcb_rects = 0;
+ 
+       if (n_rects > 0 && n_rects <= ARRAY_SIZE(xcb_rects)) {
+          for (int i = 0; i < n_rects; i++) {
+@@ -1184,26 +1369,45 @@
+             xcb_rects[i].width = rect[2];
+             xcb_rects[i].height = rect[3];
+          }
+-
+-         region = draw->region;
+-         xcb_xfixes_set_region(draw->conn, region, n_rects, xcb_rects);
++         n_xcb_rects = n_rects;
+       }
+ 
+-      xcb_present_pixmap(draw->conn,
+-                         draw->drawable,
+-                         back->pixmap,
+-                         (uint32_t) draw->send_sbc,
+-                         0,                                    /* valid */
+-                         region,                               /* update */
+-                         0,                                    /* x_off */
+-                         0,                                    /* y_off */
+-                         None,                                 /* target_crtc */
+-                         None,
+-                         back->sync_fence,
+-                         options,
+-                         target_msc,
+-                         divisor,
+-                         remainder, 0, NULL);
++      if (loader_dri3_deferred_present_enabled(draw) &&
++          loader_dri3_deferred_present_queue(draw, back->pixmap,
++                                             (uint32_t) draw->send_sbc,
++                                             xcb_rects, n_xcb_rects,
++                                             back->sync_fence, options,
++                                             target_msc, divisor, remainder)) {
++         /* queued; sent once the frame's GPU fence signals */
++      } else {
++         if (n_xcb_rects) {
++            /* Create the damage region lazily: some servers advertise XFIXES
++             * without implementing CreateRegion, and it is only needed when
++             * damage rectangles are supplied. */
++            if (!draw->region) {
++               draw->region = xcb_generate_id(draw->conn);
++               xcb_xfixes_create_region(draw->conn, draw->region, 0, NULL);
++            }
++            region = draw->region;
++            xcb_xfixes_set_region(draw->conn, region, n_xcb_rects, xcb_rects);
++         }
++
++         xcb_present_pixmap(draw->conn,
++                            draw->drawable,
++                            back->pixmap,
++                            (uint32_t) draw->send_sbc,
++                            0,                                    /* valid */
++                            region,                               /* update */
++                            0,                                    /* x_off */
++                            0,                                    /* y_off */
++                            None,                                 /* target_crtc */
++                            None,
++                            back->sync_fence,
++                            options,
++                            target_msc,
++                            divisor,
++                            remainder, 0, NULL);
++      }
+    } else {
+       /* This can only be reached by double buffered GLXPbuffer. */
+       assert(draw->type == LOADER_DRI3_DRAWABLE_PBUFFER);
+--- a/src/gallium/frontends/dri/loader_dri3_helper.h
++++ b/src/gallium/frontends/dri/loader_dri3_helper.h
+@@ -30,6 +30,7 @@
+ #include <xcb/xcb.h>
+ #include <xcb/dri3.h>
+ #include <xcb/present.h>
++#include <xcb/xfixes.h>
+ 
+ #include <GL/gl.h>
+ #include "mesa_interface.h"
+@@ -186,6 +187,31 @@
+    cnd_t event_cnd;
+    unsigned last_special_event_sequence;
+    bool has_event_waiter;
++
++   /* Deferred presentation (see loader_dri3_deferred_present_* in the
++    * .c): a worker that waits on the driver's GPU fence for a frame and
++    * only then sends the PresentPixmap request. */
++   struct {
++      int enabled;           /* 0 = undecided, 1 = yes, 2 = no */
++      bool started;
++      bool exit;
++      thrd_t thread;
++      mtx_t mtx;
++      cnd_t cnd;
++      unsigned in_progress;
++      unsigned head, tail;
++      struct {
++         int fence_fd;
++         xcb_window_t drawable;
++         xcb_pixmap_t pixmap;
++         uint32_t serial;
++         xcb_rectangle_t rects[64]; /* damage snapshot; region created when sent */
++         uint16_t n_rects;
++         xcb_sync_fence_t idle_fence;
++         uint32_t options;
++         uint64_t target_msc, divisor, remainder;
++      } queue[16];
++   } deferred;
+ };
+ 
+ PUBLIC void
