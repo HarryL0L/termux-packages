@@ -89,6 +89,8 @@ termux_step_host_build() {
 			"libllvmspirvlib$TERMUX_HOST_LLVM_MAJOR_VERSION.1" \
 			"libclang-$TERMUX_HOST_LLVM_MAJOR_VERSION-dev" \
 			"libclang-cpp$TERMUX_HOST_LLVM_MAJOR_VERSION-dev" \
+			libdrm-dev \
+			libdrm2 \
 			libz3-4 \
 			spirv-tools-dev \
 			spirv-tools-headers
@@ -110,6 +112,7 @@ termux_step_host_build() {
 		export CPPFLAGS="-I$($LLVM_CONFIG_WRAPPER --includedir)"
 		CPPFLAGS+=" -I$HOSTBUILD_ROOTFS/usr/lib/llvm-$TERMUX_HOST_LLVM_MAJOR_VERSION/lib/clang/$TERMUX_HOST_LLVM_MAJOR_VERSION/include"
 		CPPFLAGS+=" -I$HOSTBUILD_ROOTFS/usr/include"
+		CPPFLAGS+=" -I$HOSTBUILD_ROOTFS/usr/include/libdrm"
 		export LDFLAGS="-L$HOSTBUILD_ROOTFS/usr/lib/x86_64-linux-gnu"
 	fi
 
