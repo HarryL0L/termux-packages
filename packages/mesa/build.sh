@@ -125,6 +125,7 @@ termux_step_host_build() {
 		-Dmesa-clc=enabled \
 		-Dinstall-precomp-compiler=true \
 		-Dprecomp-compiler=enabled \
+		-Dtools=panfrost \
 		-Dplatforms= \
 		-Dllvm=enabled \
 		-Dgallium-rusticl=false \
