@@ -1,0 +1,35 @@
+Chameleon: optionally don't announce the XWAYLAND extension.
+
+Mesa's Vulkan WSI checks for this extension. When it finds it, it presents
+without waiting for the GPU and, in mailbox mode, asynchronously. When it
+does not, it behaves as it does with Termux:X11: in mailbox mode it waits for
+each frame's fence before presenting it. With CHAMELEON_XWAYLAND_PLAIN_X=1 in
+Xwayland's environment the extension is not registered, so stock Mesa gives
+this server the same treatment.
+
+This is an experiment: other programs that look for Xwayland (to work around
+its pointer or window quirks) will also stop seeing it.
+
+Written against xserver master of 2024-05-09 (just before xwayland 24.1.0).
+
+--- a/hw/xwayland/xwayland.c
++++ b/hw/xwayland/xwayland.c
+@@ -413,6 +413,18 @@
+ static void
+ xwlExtensionInit(void)
+ {
++    /* Chameleon: clients find out that this is Xwayland from this extension.
++     * Mesa's Vulkan WSI then presents without waiting for the GPU, because a
++     * compositor normally waits on the buffer's fence. On Android nothing
++     * attaches one, so the frame may be read half-drawn. Without the
++     * extension Mesa treats this server as it does any other X server, and
++     * in mailbox mode waits for each frame itself before presenting it.
++     */
++    const char *plain = getenv("CHAMELEON_XWAYLAND_PLAIN_X");
++
++    if (plain && strcmp(plain, "1") == 0)
++        return;
++
+     AddExtension(XWAYLAND_EXTENSION_NAME,
+                  XwlNumberEvents, XwlNumberErrors,
+                  ProcXwaylandDispatch, SProcXwaylandDispatch,
