@@ -1,0 +1,150 @@
+Chameleon: copy at most the latest frame of a window per msc.
+
+Xwayland copies every PresentPixmap as soon as it arrives, and Mesa's Vulkan
+WSI presents asynchronously under Xwayland in mailbox mode, so a client
+rendering at 1000 fps makes the server copy 1000 frames a second although
+the compositor shows 60. A copy is cheap for a GPU blit, but with Chameleon a
+client's own driver (turnip, panvk, ...) hands over buffers that Android's
+driver cannot import, and each copy is a CPU copy.
+
+Once a window has copied in the current msc, a present that would execute at
+once is now held until the next msc, and a later one replaces it: the
+replaced pixmap is idled immediately and its present completes as skipped,
+as Xorg's present_scmd_pixmap() does. The first present of an msc still
+executes at once, so a client that presents once per frame sees no change.
+
+CHAMELEON_PRESENT_LATEST=0 restores Xwayland's own behaviour.
+
+Written against xserver master of 2024-05-09 (just before xwayland 24.1.0).
+
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -57,6 +57,30 @@
+ 
+ static DevPrivateKeyRec xwl_present_window_private_key;
+ 
++/*
++ * Chameleon: showing a frame of a client that renders with its own driver
++ * costs a CPU copy in the server, so don't copy frames nobody will see. Once
++ * a window has copied in the current msc, a present that would execute at
++ * once is held until the next msc instead, and replaces the one held before
++ * it, which gets its pixmap back immediately and completes as skipped (as
++ * on Xorg). The first present of an msc still executes at once, so a client
++ * that presents once per frame sees no change.
++ * CHAMELEON_PRESENT_LATEST=0 turns this off.
++ */
++static Bool
++xwl_present_copy_latest(void)
++{
++    static int latest = -1;
++
++    if (latest < 0) {
++        const char *env = getenv("CHAMELEON_PRESENT_LATEST");
++
++        latest = !(env && strcmp(env, "0") == 0);
++    }
++
++    return latest;
++}
++
+ static struct xwl_present_window *
+ xwl_present_window_priv(WindowPtr window)
+ {
+@@ -1032,6 +1056,7 @@
+     struct xwl_present_event *event = xwl_present_event_from_vblank(vblank);
+     struct xwl_screen *xwl_screen = xwl_screen_get(window->drawable.pScreen);
+     Bool notify_only = !vblank->window || !vblank->pixmap;
++    Bool was_blocking;
+ 
+     xorg_list_del(&vblank->event_queue);
+ 
+@@ -1158,6 +1183,8 @@
+         present_execute_copy(vblank, crtc_msc);
+         assert(!vblank->queued);
+ 
++        xwl_present_window->copy_msc = crtc_msc;
++
+         /* Set the copy_executed field, so this will fall through to present_execute_post next time */
+         event->copy_executed = TRUE;
+ 
+@@ -1170,7 +1197,15 @@
+             return;
+     }
+ 
++    /* A held present that was replaced while it blocked later ones (waiting
++     * for a fence) ends here without a copy: let them run.
++     */
++    was_blocking = xwl_present_window->blocking_event == vblank->event_id;
++
+     present_execute_post(vblank, ust, crtc_msc);
++
++    if (was_blocking)
++        xwl_present_flush_blocked(xwl_present_window, crtc_msc);
+ }
+ 
+ static int
+@@ -1207,10 +1242,11 @@
+     present_window_priv_ptr     window_priv = present_get_window_priv(window, TRUE);
+     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
+     struct xwl_screen          *xwl_screen = xwl_screen_get(screen_priv->pScreen);
++    struct xwl_present_window  *xwl_present_window = xwl_present_window_get_priv(window);
+     uint32_t                    caps = xwl_screen->present_capabilities;
+     struct xwl_present_event *event;
+ 
+-    if (!window_priv)
++    if (!window_priv || !xwl_present_window)
+         return BadAlloc;
+ 
+ #ifdef DRI3
+@@ -1258,6 +1294,31 @@
+     event->remainder = remainder;
+     vblank->exec_msc = xwl_present_get_exec_msc(options, vblank->target_msc);
+ 
++    /* A copy that would execute now, in an msc this window already copied
++     * in: hold it for the next one (see xwl_present_copy_latest).
++     */
++    if (pixmap && !vblank->flip && crtc_msc >= vblank->exec_msc &&
++        xwl_present_window->copy_msc == crtc_msc && xwl_present_copy_latest()) {
++        vblank->exec_msc = crtc_msc + 1;
++        event->held = TRUE;
++
++        /* It overwrites a held copy of the same area, which then need not
++         * happen.
++         */
++        if (!update) {
++            present_vblank_ptr waiting;
++
++            xorg_list_for_each_entry(waiting, &window_priv->vblank, window_list) {
++                if (waiting->queued && waiting->pixmap &&
++                    xwl_present_event_from_vblank(waiting)->held &&
++                    waiting->x_off == x_off && waiting->y_off == y_off &&
++                    waiting->pixmap->drawable.width == pixmap->drawable.width &&
++                    waiting->pixmap->drawable.height == pixmap->drawable.height)
++                    present_vblank_scrap(waiting);
++            }
++        }
++    }
++
+     vblank->queued = TRUE;
+     if (crtc_msc < vblank->exec_msc) {
+         if (xwl_present_queue_vblank(screen, window, target_crtc, vblank->event_id, vblank->exec_msc) == Success)
+--- a/hw/xwayland/xwayland-present.h
++++ b/hw/xwayland/xwayland-present.h
+@@ -40,6 +40,8 @@
+ 
+     uint64_t msc;
+     uint64_t ust;
++    /* msc of the last copy executed for this window */
++    uint64_t copy_msc;
+ 
+     OsTimerPtr frame_timer;
+     /* Timestamp when the current timer was first armed */
+@@ -65,6 +67,8 @@
+ 
+     PixmapPtr pixmap;
+     Bool copy_executed;
++    /* a copy held back until the msc after the one it arrived in */
++    Bool held;
+ 
+     uint32_t options;
+     uint64_t divisor;
