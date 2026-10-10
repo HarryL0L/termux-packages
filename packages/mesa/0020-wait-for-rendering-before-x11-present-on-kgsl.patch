@@ -1,0 +1,63 @@
+Wait for an image to be rendered before presenting it to X11, on kgsl.
+
+Under Xwayland, and in FIFO and immediate mode on any X server, Mesa presents
+a swapchain image without waiting for the GPU. It relies on implicit sync:
+a DRM driver attaches the rendering fence to the dma-buf, and whoever reads
+the buffer waits for it. Qualcomm's kgsl attaches no such fence, and the
+kernel interface Mesa would use to attach one itself needs Linux 6.0. On
+Android the X server (Termux:X11, or Xwayland under Chameleon) reads the
+buffer with the CPU, so it can copy a frame that turnip is still drawing,
+which shows as flicker or tearing.
+
+Turnip now tells WSI that it has no implicit sync when it runs on kgsl, and
+the X11 present thread then waits for the image's fence before every present,
+as it already does in mailbox mode on X servers other than Xwayland. The wait
+is in WSI's own thread, not the application's. Other drivers, and turnip on
+the msm DRM driver, are unaffected.
+
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -157,6 +157,13 @@
+ 
+    bool sw;
+ 
++   /* Set by drivers whose kernel driver attaches no fence to a shared buffer
++    * (e.g. Qualcomm's kgsl). A window system that reads a presented image
++    * then has nothing to wait on, so WSI waits for the image to be rendered
++    * before it presents it.
++    */
++   bool no_implicit_sync;
++
+    /* Set to true if the implementation is ok with linear WSI images. */
+    bool wants_linear;
+ 
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2520,9 +2520,13 @@
+ 
+       VkPresentModeKHR present_mode = chain->images[image_index].present_mode;
+ 
+-      /* Not necessary to block when we have explicit sync */
++      /* Not necessary to block when we have explicit sync. Without implicit
++       * sync either, the server would read an image that is still being
++       * rendered, in any present mode.
++       */
+       bool need_fence_wait =
+-            x11_needs_wait_for_fences(chain->base.wsi, wsi_conn, present_mode) &&
++            (x11_needs_wait_for_fences(chain->base.wsi, wsi_conn, present_mode) ||
++             chain->base.wsi->no_implicit_sync) &&
+             !chain->base.image_info.explicit_sync;
+ 
+       bool need_timing_fence_wait = x11_swapchain_present_timing_is_out_of_order_completion(
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -1868,6 +1868,9 @@
+       vk_physical_device_finish(&device->vk);
+       goto fail_free_name;
+    }
++
++   /* kgsl attaches no fences to the dma-bufs it renders to */
++   device->wsi_device.no_implicit_sync = is_kgsl(instance);
+ #endif
+ 
+    /* The gpu id is already embedded in the uuid so we just pass "tu"
