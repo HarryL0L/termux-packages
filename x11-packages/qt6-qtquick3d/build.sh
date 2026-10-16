@@ -29,5 +29,4 @@ termux_step_host_build() {
 	ninja \
 		-j ${TERMUX_PKG_MAKE_PROCESSES} \
 		install
-		
 }
