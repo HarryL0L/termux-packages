@@ -1,0 +1,1248 @@
+Eden uses __ANDROID__ to mean "the Android app" (JNI, content URIs, Logcat,
+ADPF, adrenotools, ...). Termux is bionic but builds the Linux desktop (Qt)
+frontend, so switch Eden's own app checks to a private macro that is never
+defined. The real __ANDROID__ stays defined for bionic-level checks, which are
+left untouched on purpose:
+  - src/common/host_memory.cpp   (memfd_create syscall fallback, API < 30)
+  - src/common/zbic_compression.cpp (no qsort_r in bionic)
+  - dynarmic decoder_detail.h    (NDK workaround)
+and for third-party code (zstd, Boost.Asio, VMA, ...).
+
+diff --git a/src/audio_core/sink/sdl3_sink.cpp b/src/audio_core/sink/sdl3_sink.cpp
+--- a/src/audio_core/sink/sdl3_sink.cpp
++++ b/src/audio_core/sink/sdl3_sink.cpp
+@@ -28,7 +28,7 @@ namespace {
+         //
+         // Keep in sync with cubeb_sink.cpp name.
+         SDL_SetHint("SDL_AUDIO_DEVICE_APP_NAME", "yuzu Latency Getter");
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "openslES", SDL_HINT_OVERRIDE);
+         if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+             LOG_WARNING(Audio_Sink, "OpenSL ES audio initialization failed: {}; retrying default drivers", SDL_GetError());
+diff --git a/src/common/adpf.cpp b/src/common/adpf.cpp
+--- a/src/common/adpf.cpp
++++ b/src/common/adpf.cpp
+@@ -3,7 +3,7 @@
+ 
+ #include "common/adpf.h"
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ 
+ #include <algorithm>
+ #include <array>
+diff --git a/src/common/cpu_features.cpp b/src/common/cpu_features.cpp
+--- a/src/common/cpu_features.cpp
++++ b/src/common/cpu_features.cpp
+@@ -19,7 +19,7 @@
+ #elif defined(__DragonFly__) || defined(__FreeBSD__)
+ #include <sys/types.h>
+ #include <machine/cpufunc.h>
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+ #include <sys/system_properties.h>
+ #endif
+ 
+@@ -304,7 +304,7 @@ namespace {
+ }
+ [[nodiscard]] s64 GetHostCNTFRQ() noexcept {
+     u64 cntfrq_el0 = 0;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     std::string_view board{""};
+     char buffer[PROP_VALUE_MAX];
+     int len{__system_property_get("ro.product.board", buffer)};
+diff --git a/src/common/device_power_state.cpp b/src/common/device_power_state.cpp
+--- a/src/common/device_power_state.cpp
++++ b/src/common/device_power_state.cpp
+@@ -6,7 +6,7 @@
+ #if defined(_WIN32)
+ #include <windows.h>
+ 
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+ #include <atomic>
+ extern std::atomic<int> g_battery_percentage;
+ extern std::atomic<bool> g_is_charging;
+@@ -44,7 +44,7 @@ namespace Common {
+             info.has_battery = false;
+         }
+ 
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+         info.percentage = g_battery_percentage.load(std::memory_order_relaxed);
+         info.charging = g_is_charging.load(std::memory_order_relaxed);
+         info.has_battery = g_has_battery.load(std::memory_order_relaxed);
+diff --git a/src/common/fs/file.cpp b/src/common/fs/file.cpp
+--- a/src/common/fs/file.cpp
++++ b/src/common/fs/file.cpp
+@@ -11,7 +11,7 @@
+ #include "common/fs/file.h"
+ #include "common/fs/fs.h"
+ #include "common/fs/fs_types.h"
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "common/fs/fs_android.h"
+ #endif
+ #include "common/logging.h"
+@@ -375,7 +375,7 @@ void IOFile::Open(const fs::path& path, FileAccessMode mode, FileType type, File
+             _wfopen_s(&file, path.c_str(), AccessModeToWStr(mode, type));
+         }
+     }
+-#elif __ANDROID__
++#elif __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         ASSERT_MSG(mode == FileAccessMode::Read, "Content URI file access is for read-only!");
+         if (PlatformMapReadOnly(*this, path.c_str()) == -1) {
+@@ -508,7 +508,7 @@ u64 IOFile::GetSize() const {
+     if (file) {
+         // Flush any unwritten buffered data into the file prior to retrieving the file mmap_size.
+         std::fflush(file);
+-#if __ANDROID__
++#if __EDEN_ANDROID_APP__
+         u64 file_size = 0;
+         if (Android::IsContentUri(file_path)) {
+             file_size = Android::GetSize(file_path);
+diff --git a/src/common/fs/fs.cpp b/src/common/fs/fs.cpp
+--- a/src/common/fs/fs.cpp
++++ b/src/common/fs/fs.cpp
+@@ -6,7 +6,7 @@
+ 
+ #include "common/fs/file.h"
+ #include "common/fs/fs.h"
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "common/fs/fs_android.h"
+ #endif
+ #include "common/fs/path_util.h"
+@@ -477,7 +477,7 @@ void IterateDirEntriesRecursively(const std::filesystem::path& path, const DirEn
+ 
+ bool Exists(const fs::path& path) {
+     std::error_code ec;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         return Android::Exists(path);
+     } else {
+@@ -490,7 +490,7 @@ bool Exists(const fs::path& path) {
+ 
+ bool IsFile(const fs::path& path) {
+     std::error_code ec;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         return !Android::IsDirectory(path);
+     } else {
+@@ -503,7 +503,7 @@ bool IsFile(const fs::path& path) {
+ 
+ bool IsDir(const fs::path& path) {
+     std::error_code ec;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         return Android::IsDirectory(path);
+     } else {
+@@ -556,7 +556,7 @@ fs::file_type GetEntryType(const fs::path& path) {
+ }
+ 
+ u64 GetSize(const fs::path& path) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         return Android::GetSize(path);
+     }
+diff --git a/src/common/fs/path_util.cpp b/src/common/fs/path_util.cpp
+--- a/src/common/fs/path_util.cpp
++++ b/src/common/fs/path_util.cpp
+@@ -12,7 +12,7 @@
+ 
+ #include "common/assert.h"
+ #include "common/fs/fs.h"
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "common/fs/fs_android.h"
+ #endif
+ #include "common/fs/fs_paths.h"
+@@ -127,7 +127,7 @@ public:
+         LEGACY_PATH(Yuzu, YUZU)
+         LEGACY_PATH(Suyu, SUYU)
+ #undef LEGACY_PATH
+-#elif __ANDROID__
++#elif __EDEN_ANDROID_APP__
+         ASSERT(!eden_path.empty());
+         eden_path_cache = eden_path / CACHE_DIR;
+         eden_path_config = eden_path / CONFIG_DIR;
+@@ -457,11 +457,11 @@ std::vector<std::string> SplitPathComponentsCopy(std::string_view filename) {
+ 
+ std::string SanitizePath(std::string_view path_, DirectorySeparator directory_separator) {
+     std::string path(path_);
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (Android::IsContentUri(path)) {
+         return path;
+     }
+-#endif // __ANDROID__
++#endif // __EDEN_ANDROID_APP__
+ 
+     char type1 = directory_separator == DirectorySeparator::BackwardSlash ? '/' : '\\';
+     char type2 = directory_separator == DirectorySeparator::BackwardSlash ? '\\' : '/';
+@@ -567,7 +567,7 @@ std::string GetParentPath(std::string_view path) {
+         return std::string(path);
+     }
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (path[0] != '/') {
+         std::string path_string{path};
+         return FS::Android::GetParentDirectory(path_string);
+diff --git a/src/common/logging.cpp b/src/common/logging.cpp
+--- a/src/common/logging.cpp
++++ b/src/common/logging.cpp
+@@ -13,7 +13,7 @@
+ #include <regex>
+ #include <thread>
+ 
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+ #include <android/log.h>
+ #endif
+ #ifdef _WIN32
+@@ -267,7 +267,7 @@ struct FileBackend final : public Backend {
+             return;
+ 
+         auto message = FormatLogMessage(entry);
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+         if (Settings::values.censor_username.GetValue()) {
+             // This must be a static otherwise it would get checked on EVERY
+             // instance of logging an entry...
+@@ -323,7 +323,7 @@ struct DebuggerBackend final : public Backend {
+     void Flush() noexcept override {}
+ };
+ #endif
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ /// @brief Backend that writes to the Android logcat
+ struct LogcatBackend : public Backend {
+     explicit LogcatBackend() noexcept = default;
+@@ -362,7 +362,7 @@ struct Impl {
+ #ifdef _WIN32
+         lambda(static_cast<Backend&>(debugger_backend));
+ #endif
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         lambda(static_cast<Backend&>(lc_backend));
+ #endif
+     }
+@@ -375,7 +375,7 @@ struct Impl {
+ #ifdef _WIN32
+     DebuggerBackend debugger_backend{};
+ #endif
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     LogcatBackend lc_backend{};
+ #endif
+     std::chrono::steady_clock::time_point time_origin{std::chrono::steady_clock::now()};
+diff --git a/src/common/net/net.cpp b/src/common/net/net.cpp
+--- a/src/common/net/net.cpp
++++ b/src/common/net/net.cpp
+@@ -87,7 +87,7 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
+     find_asset("Standard", {"standard.dmg", "standard.tar.gz", ".dmg", ".tar.gz"});
+     find_asset("PGO", {"pgo.dmg", "pgo.tar.gz"});
+ #endif // ARCHITECTURE_arm64
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+ #ifdef ARCHITECTURE_x86_64
+     find_asset("Standard", {"chromeos.apk"});
+ #elif defined(ARCHITECTURE_arm64)
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -184,7 +184,7 @@ bool IsFastmemEnabled() {
+     // Only 4kb systems support host MMU right now
+     // TODO: Support this
+     return getpagesize() == 4096;
+-#elif !defined(__APPLE__) && !defined(__ANDROID__) && !defined(_WIN32) && !defined(__linux__) && !defined(__FreeBSD__)
++#elif !defined(__APPLE__) && !defined(__EDEN_ANDROID_APP__) && !defined(_WIN32) && !defined(__linux__) && !defined(__FreeBSD__)
+     return false;
+ #else
+     return true;
+diff --git a/src/common/settings.h b/src/common/settings.h
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -172,7 +172,7 @@ struct Values {
+ 
+     // Audio
+     SwitchableSetting<AudioEngine> sink_id{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                            AudioEngine::Sdl3,
+ #else
+                                            AudioEngine::Auto,
+@@ -375,7 +375,7 @@ struct Values {
+                                               Category::CpuDebug};
+ 
+     SwitchableSetting<bool> cpuopt_unsafe_host_mmu{linkage,
+-#if !defined(__APPLE__) && !defined(__linux__) && !defined(__ANDROID__) && !defined(_WIN32)
++#if !defined(__APPLE__) && !defined(__linux__) && !defined(__EDEN_ANDROID_APP__) && !defined(_WIN32)
+                                         false,
+ #else
+                                         true,
+@@ -426,7 +426,7 @@ struct Values {
+                                                     true,
+                                                     true};
+     SwitchableSetting<int, true> fsr_sharpening_slider{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                        0,
+ #else
+                                                        25,
+@@ -563,7 +563,7 @@ struct Values {
+                                          linkage, 0, "bg_blue", Category::Renderer, Specialization::Default, true, true};
+ 
+     SwitchableSetting<GpuAccuracy, true> gpu_accuracy{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                       GpuAccuracy::Low,
+ #else
+                                                       GpuAccuracy::High,
+@@ -603,7 +603,7 @@ struct Values {
+                                                       "nvdec_emulation", Category::RendererAdvanced};
+ 
+     SwitchableSetting<AnisotropyMode, true> max_anisotropy{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                            AnisotropyMode::Default,
+ #else
+                                                            AnisotropyMode::Automatic,
+@@ -656,7 +656,7 @@ struct Values {
+                                                 Category::RendererAdvanced};
+ 
+     SwitchableSetting<bool> use_reactive_flushing{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                   false,
+ #else
+                                                   true,
+@@ -675,7 +675,7 @@ struct Values {
+                                                   true,
+                                                   true};
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     SwitchableSetting<bool> use_optimized_vertex_buffers{linkage,
+                                                  false,
+                                                  "use_optimized_vertex_buffers",
+@@ -702,7 +702,7 @@ struct Values {
+                                                         true,
+                                                         true};
+     SwitchableSetting<bool> async_presentation{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                true,
+ #else
+                                                false,
+@@ -740,7 +740,7 @@ struct Values {
+                                                   Category::RendererHacks};
+ 
+     SwitchableSetting<ExtendedDynamicState> dyna_state{linkage,
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+                                            ExtendedDynamicState::Disabled,
+ #elif defined(__APPLE__)
+                                            ExtendedDynamicState::Disabled,
+@@ -759,7 +759,7 @@ struct Values {
+                                                 Specialization::Scalar};
+ 
+     SwitchableSetting<bool> vertex_input_dynamic_state{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                        false,
+ #else
+                                                        true,
+@@ -775,7 +775,7 @@ struct Values {
+                                                     linkage, false, "disable_shader_loop_safety_checks", Category::RendererDebug};
+     Setting<bool> enable_renderdoc_hotkey{linkage, false, "renderdoc_hotkey",
+                                           Category::RendererDebug};
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+     // Debug override for automatic BCn patching detection
+     Setting<bool> patch_old_qcom_drivers{linkage, false, "patch_old_qcom_drivers",
+                                          Category::RendererDebug};
+@@ -820,7 +820,7 @@ struct Values {
+     Setting<s32> current_user{linkage, 0, "current_user", Category::System};
+ 
+     SwitchableSetting<ConsoleMode> use_docked_mode{linkage,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                                                    ConsoleMode::Handheld,
+ #else
+                                                    ConsoleMode::Docked,
+diff --git a/src/common/string_util.cpp b/src/common/string_util.cpp
+--- a/src/common/string_util.cpp
++++ b/src/common/string_util.cpp
+@@ -18,7 +18,7 @@
+ #include <windows.h>
+ #endif
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include <common/fs/fs_android.h>
+ #endif
+ 
+@@ -45,7 +45,7 @@ bool SplitPath(const std::string& full_path, std::string* _pPath, std::string* _
+     if (full_path.empty())
+         return false;
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (full_path[0] != '/') {
+         *_pPath = Common::FS::Android::GetParentDirectory(full_path);
+         *_pFilename = Common::FS::Android::GetFilename(full_path);
+diff --git a/src/common/thread.cpp b/src/common/thread.cpp
+--- a/src/common/thread.cpp
++++ b/src/common/thread.cpp
+@@ -82,7 +82,7 @@ int NiceValueForPriority(Common::ThreadPriority priority) {
+ } // Anonymous namespace
+ #endif
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include <sys/utsname.h>
+ #include <atomic>
+ #include <cerrno>
+@@ -475,7 +475,7 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
+         }
+     }();
+     set_thread_priority(find_thread(NULL), priority);
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+     const int nice_value = NiceValueForPriority(new_priority);
+     const pid_t tid = gettid();
+     if (setpriority(PRIO_PROCESS, static_cast<id_t>(tid), nice_value) != 0) {
+@@ -540,7 +540,7 @@ void SetCurrentThreadName(const char* name) {
+ }
+ 
+ void SetCurrentThreadToPerformanceCores() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     if (ADPF::AddCurrentThread(ADPF::Session::Render)) {
+         SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
+         return;
+@@ -550,7 +550,7 @@ void SetCurrentThreadToPerformanceCores() {
+ }
+ 
+ void SetCurrentThreadToEfficiencyCores() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     if (ADPF::AddCurrentThread(ADPF::Session::Background)) {
+         SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
+         return;
+@@ -560,21 +560,21 @@ void SetCurrentThreadToEfficiencyCores() {
+ }
+ 
+ void SetCurrentThreadToBackgroundWork() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     ADPF::AddCurrentThread(ADPF::Session::Background);
+     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
+ #endif
+ }
+ 
+ void SetCurrentThreadToAllCores() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     ADPF::RemoveCurrentThread();
+     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
+ #endif
+ }
+ 
+ void RefreshThreadPolicies() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     CpuTopologyState& state = State();
+     std::scoped_lock topology_lock{state.topology_mutex};
+     RefreshTopologyLocked(state);
+@@ -597,7 +597,7 @@ void RefreshThreadPolicies() {
+ }
+ 
+ void PollThreadPolicies() {
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     static const bool needed = !KernelPreservesRequestedAffinity();
+     if (!needed) {
+         return;
+diff --git a/src/core/debugger/debugger.cpp b/src/core/debugger/debugger.cpp
+--- a/src/core/debugger/debugger.cpp
++++ b/src/core/debugger/debugger.cpp
+@@ -10,7 +10,7 @@
+ 
+ #include <boost/asio.hpp>
+ #include <boost/version.hpp>
+-#if BOOST_VERSION > 108400 && (!defined(_WINDOWS) && !defined(__ANDROID__)) || defined(YUZU_BOOST_v1)
++#if BOOST_VERSION > 108400 && (!defined(_WINDOWS) && !defined(__EDEN_ANDROID_APP__)) || defined(YUZU_BOOST_v1)
+ #define USE_BOOST_v1
+ #endif
+ #ifdef USE_BOOST_v1
+diff --git a/src/core/file_sys/vfs/vfs_real.cpp b/src/core/file_sys/vfs/vfs_real.cpp
+--- a/src/core/file_sys/vfs/vfs_real.cpp
++++ b/src/core/file_sys/vfs/vfs_real.cpp
+@@ -23,7 +23,7 @@
+ #define stat _stat64
+ #endif
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "common/fs/fs_android.h"
+ #endif
+ 
+@@ -297,7 +297,7 @@ RealVfsFile::~RealVfsFile() {
+ }
+ 
+ std::string RealVfsFile::GetName() const {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (path[0] != '/') {
+         return FS::Android::GetFilename(path);
+     }
+diff --git a/src/core/game_settings.cpp b/src/core/game_settings.cpp
+--- a/src/core/game_settings.cpp
++++ b/src/core/game_settings.cpp
+@@ -78,7 +78,7 @@ static OS DetectOS() {
+     return OS::Windows;
+ #elif defined(__FIREOS__)
+     return OS::FireOS;
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+     return OS::Android;
+ #elif defined(__OHOS__)
+     return OS::HarmonyOS;
+diff --git a/src/core/internal_network/network_interface.cpp b/src/core/internal_network/network_interface.cpp
+--- a/src/core/internal_network/network_interface.cpp
++++ b/src/core/internal_network/network_interface.cpp
+@@ -13,7 +13,7 @@
+ #include <winsock2.h>
+ #include <windows.h>
+ #include <iphlpapi.h>
+-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
++#elif defined(__linux__) || defined(__EDEN_ANDROID_APP__) || defined(__APPLE__)
+ #include <cerrno>
+ #include <ifaddrs.h>
+ #include <net/if.h>
+@@ -111,7 +111,7 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
+ #else
+ 
+ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
+-#if defined(__ANDROID__) || defined(__linux__) || defined(__APPLE__) || defined(__managarm__)
++#if defined(__EDEN_ANDROID_APP__) || defined(__linux__) || defined(__APPLE__) || defined(__managarm__)
+     struct ifaddrs* ifaddr = nullptr;
+     if (getifaddrs(&ifaddr) != 0) {
+         LOG_ERROR(Network, "getifaddrs: {}", std::strerror(errno));
+@@ -126,7 +126,7 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
+         u32 flags;
+     };
+     std::vector<RoutingEntry> routes{};
+-#if defined(__ANDROID__) || defined(__APPLE__)
++#if defined(__EDEN_ANDROID_APP__) || defined(__APPLE__)
+     // Even through Linux based, we can't reliably obtain routing information from there :(
+     // macOS not Linux based and would murder us if we attempt to access /proc
+ #else
+diff --git a/src/core/internal_network/wifi_scanner.cpp b/src/core/internal_network/wifi_scanner.cpp
+--- a/src/core/internal_network/wifi_scanner.cpp
++++ b/src/core/internal_network/wifi_scanner.cpp
+@@ -13,7 +13,7 @@
+ #ifdef _MSC_VER
+ #pragma comment(lib, "wlanapi.lib")
+ #endif
+-#elif defined(__linux__) && !defined(__ANDROID__)
++#elif defined(__linux__) && !defined(__EDEN_ANDROID_APP__)
+ #include <iwlib.h>
+ #elif defined(__FreeBSD__)
+ #include <sys/types.h>
+@@ -94,7 +94,7 @@ std::vector<Network::ScanData> ScanWifiNetworks(std::chrono::milliseconds deadli
+     WlanCloseHandle(hClient, nullptr);
+     return out;
+ }
+-#elif defined(__linux__) && !defined(__ANDROID__)
++#elif defined(__linux__) && !defined(__EDEN_ANDROID_APP__)
+ static u8 QualityToPercent(const iwrange& r, const wireless_scan* ws) {
+     const iw_quality qual = ws->stats.qual;
+     const int lvl = qual.level;
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -56,7 +56,7 @@ struct Memory::Impl {
+             current_page_table->fastmem_arena = nullptr;
+         }
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         heap_tracker.emplace(system.DeviceMemory().buffer);
+         host_buffer = std::addressof(*heap_tracker);
+ #else
+@@ -773,7 +773,7 @@ struct Memory::Impl {
+     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
+     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
+     std::mutex sys_core_guard;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     std::optional<Common::HeapTracker> heap_tracker;
+     Common::HeapTracker* host_buffer{};
+ #else
+@@ -977,7 +977,7 @@ NCEAccessFaultAction Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t
+             mapped = false;
+         },
+         [&] { rasterizer = true; });
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (!rasterizer && mapped) {
+         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
+     }
+@@ -992,7 +992,7 @@ NCEAccessFaultAction Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t
+ }
+ 
+ bool Memory::InvalidateSeparateHeap(void* fault_address) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     return impl->host_buffer->DeferredMapSeparateHeap(static_cast<u8*>(fault_address));
+ #else
+     return false;
+diff --git a/src/core/tools/renderdoc.cpp b/src/core/tools/renderdoc.cpp
+--- a/src/core/tools/renderdoc.cpp
++++ b/src/core/tools/renderdoc.cpp
+@@ -31,7 +31,7 @@ RenderdocAPI::RenderdocAPI() {
+ #elif defined(__HAIKU__)
+     // no rtld on haiku
+ #else
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     static constexpr const char RENDERDOC_LIB[] = "libVkLayer_GLES_RenderDoc.so";
+ #else
+     static constexpr const char RENDERDOC_LIB[] = "librenderdoc.so";
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/perf_map.cpp b/src/dynarmic/src/dynarmic/backend/x64/perf_map.cpp
+--- a/src/dynarmic/src/dynarmic/backend/x64/perf_map.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/perf_map.cpp
+@@ -12,7 +12,7 @@
+ 
+ #include "dynarmic/backend/x64/perf_map.h"
+ #include "common/common_types.h"
+-#if defined(__linux__) && !defined(__ANDROID__)
++#if defined(__linux__) && !defined(__EDEN_ANDROID_APP__)
+ #    include <cstdio>
+ #    include <cstdlib>
+ #    include <mutex>
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/perf_map.h b/src/dynarmic/src/dynarmic/backend/x64/perf_map.h
+--- a/src/dynarmic/src/dynarmic/backend/x64/perf_map.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/perf_map.h
+@@ -14,7 +14,7 @@
+ 
+ namespace Dynarmic::Backend::X64 {
+ 
+-#if defined(__linux__) && !defined(__ANDROID__)
++#if defined(__linux__) && !defined(__EDEN_ANDROID_APP__)
+ namespace detail {
+ void PerfMapRegister(const void* start, const void* end, std::string_view friendly_name);
+ }  // namespace detail
+diff --git a/src/frontend_common/config.cpp b/src/frontend_common/config.cpp
+--- a/src/frontend_common/config.cpp
++++ b/src/frontend_common/config.cpp
+@@ -1004,7 +1004,7 @@ std::string Config::AdjustOutputString(const std::string& string) {
+ 
+     // Windows requires that two forward slashes are used at the start of a path for unmapped
+     // network drives so we have to watch for that here
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     if (string.substr(0, 2) == "//") {
+         boost::replace_all(adjusted_string, "//", "/");
+         adjusted_string.insert(0, "/");
+diff --git a/src/frontend_common/firmware_manager.cpp b/src/frontend_common/firmware_manager.cpp
+--- a/src/frontend_common/firmware_manager.cpp
++++ b/src/frontend_common/firmware_manager.cpp
+@@ -13,7 +13,7 @@
+ #include "core/crypto/key_manager.h"
+ #include "frontend_common/content_manager.h"
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include <jni.h>
+ #include <common/android/id_cache.h>
+ #include <common/android/android_common.h>
+@@ -25,7 +25,7 @@ FirmwareManager::InstallKeys(std::string location, std::string extension) {
+ 
+     const auto keys_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     JNIEnv *env = Common::Android::GetEnvForThread();
+ 
+     jstring jsrc = Common::Android::ToJString(env, location);
+diff --git a/src/hid_core/frontend/emulated_controller.cpp b/src/hid_core/frontend/emulated_controller.cpp
+--- a/src/hid_core/frontend/emulated_controller.cpp
++++ b/src/hid_core/frontend/emulated_controller.cpp
+@@ -180,7 +180,7 @@ void EmulatedController::LoadDevices() {
+     if (npad_id_type == NpadIdType::Player1 || npad_id_type == NpadIdType::Handheld) {
+         camera_params[1] = Common::ParamPackage{"engine:camera,camera:1"};
+         nfc_params[0] = Common::ParamPackage{"engine:virtual_amiibo,nfc:1"};
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+         ring_params[1] = Common::ParamPackage{"engine:joycon,axis_x:100,axis_y:101"};
+ #else
+         android_params = Common::ParamPackage{"engine:android,port:100"};
+diff --git a/src/input_common/main.cpp b/src/input_common/main.cpp
+--- a/src/input_common/main.cpp
++++ b/src/input_common/main.cpp
+@@ -30,7 +30,7 @@
+ #include "input_common/drivers/sdl_driver.h"
+ #endif
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "input_common/drivers/android.h"
+ #endif
+ 
+@@ -85,7 +85,7 @@ struct InputSubsystem::Impl {
+         RegisterEngine("cemuhookudp", udp_client);
+         RegisterEngine("tas", tas_input);
+         RegisterEngine("camera", camera);
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         RegisterEngine("android", android);
+ #endif
+         RegisterEngine("virtual_amiibo", virtual_amiibo);
+@@ -119,7 +119,7 @@ struct InputSubsystem::Impl {
+         UnregisterEngine(udp_client);
+         UnregisterEngine(tas_input);
+         UnregisterEngine(camera);
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         UnregisterEngine(android);
+ #endif
+         UnregisterEngine(virtual_amiibo);
+@@ -138,13 +138,13 @@ struct InputSubsystem::Impl {
+             Common::ParamPackage{{"display", "Any"}, {"engine", "any"}},
+         };
+ 
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+         auto keyboard_devices = keyboard->GetInputDevices();
+         devices.insert(devices.end(), keyboard_devices.begin(), keyboard_devices.end());
+         auto mouse_devices = mouse->GetInputDevices();
+         devices.insert(devices.end(), mouse_devices.begin(), mouse_devices.end());
+ #endif
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         auto android_devices = android->GetInputDevices();
+         devices.insert(devices.end(), android_devices.begin(), android_devices.end());
+ #endif
+@@ -176,7 +176,7 @@ struct InputSubsystem::Impl {
+         if (engine == mouse->GetEngineName()) {
+             return mouse;
+         }
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         if (engine == android->GetEngineName()) {
+             return android;
+         }
+@@ -261,7 +261,7 @@ struct InputSubsystem::Impl {
+         if (engine == mouse->GetEngineName()) {
+             return true;
+         }
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         if (engine == android->GetEngineName()) {
+             return true;
+         }
+@@ -294,7 +294,7 @@ struct InputSubsystem::Impl {
+     void BeginConfiguration() {
+         keyboard->BeginConfiguration();
+         mouse->BeginConfiguration();
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         android->BeginConfiguration();
+ #endif
+ #ifdef ENABLE_LIBUSB
+@@ -310,7 +310,7 @@ struct InputSubsystem::Impl {
+     void EndConfiguration() {
+         keyboard->EndConfiguration();
+         mouse->EndConfiguration();
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         android->EndConfiguration();
+ #endif
+ #ifdef ENABLE_LIBUSB
+@@ -355,7 +355,7 @@ struct InputSubsystem::Impl {
+     std::shared_ptr<Joycons> joycon;
+ #endif
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     std::shared_ptr<Android> android;
+ #endif
+ };
+@@ -412,7 +412,7 @@ const Camera* InputSubsystem::GetCamera() const {
+     return impl->camera.get();
+ }
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ Android* InputSubsystem::GetAndroid() {
+     return impl->android.get();
+ }
+diff --git a/src/qt_common/util/game.cpp b/src/qt_common/util/game.cpp
+--- a/src/qt_common/util/game.cpp
++++ b/src/qt_common/util/game.cpp
+@@ -99,7 +99,7 @@ bool CreateShortcutLink(const std::filesystem::path& shortcut_path, const std::s
+         return false;
+     }
+     return true;
+-#elif defined(__unix__) && !defined(__APPLE__) && !defined(__ANDROID__) // Any desktop NIX
++#elif defined(__unix__) && !defined(__APPLE__) && !defined(__EDEN_ANDROID_APP__) // Any desktop NIX
+     std::filesystem::path shortcut_path_full = shortcut_path / (name + ".desktop");
+     std::ofstream shortcut_stream(shortcut_path_full, std::ios::binary | std::ios::trunc);
+     if (!shortcut_stream.is_open()) {
+@@ -141,7 +141,7 @@ bool MakeShortcutIcoPath(const u64 program_id, const std::string_view game_file_
+ #if defined(_WIN32)
+     out_icon_path = Common::FS::GetEdenPath(Common::FS::EdenPath::IconsDir);
+     ico_extension = "ico";
+-#elif !defined(__ANDROID__) // Any *nix but android
++#elif !defined(__EDEN_ANDROID_APP__) // Any *nix but android
+     out_icon_path = Common::FS::GetDataDirectory("XDG_DATA_HOME") / "icons/hicolor/256x256";
+ #endif
+     // Create icons directory if it doesn't exist
+@@ -467,7 +467,7 @@ void CreateShortcut(const std::string& game_path, const u64 program_id,
+                 .arg(QString::fromStdString(out_icon_path.string())));
+     }
+ 
+-#if defined(__unix__) && !defined(__APPLE__) && !defined(__ANDROID__)
++#if defined(__unix__) && !defined(__APPLE__) && !defined(__EDEN_ANDROID_APP__)
+     // Special case for AppImages
+     // Warn once if we are making a shortcut to a volatile AppImage
+     if (command.string().ends_with(".AppImage") && !UISettings::values.shortcut_already_warned) {
+@@ -628,7 +628,7 @@ bool SaveIconToFile(const std::filesystem::path& icon_path, const QImage& image)
+     icon_file.Close();
+ 
+     return true;
+-#elif defined(__unix__) && !defined(__APPLE__) && !defined(__ANDROID__)
++#elif defined(__unix__) && !defined(__APPLE__) && !defined(__EDEN_ANDROID_APP__)
+     // Convert and write the icon as a PNG
+     if (!image.save(QString::fromStdString(icon_path.string()))) {
+         LOG_ERROR(Frontend, "Could not write icon as PNG to file");
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_convert.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_convert.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_convert.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_convert.cpp
+@@ -151,7 +151,7 @@ Id EmitConvertU32U64(EmitContext& ctx, Id value) {
+ }
+ 
+ Id EmitConvertF16F32(EmitContext& ctx, Id value) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     return ctx.OpFConvert(ctx.F16[1], value);
+ #else
+     const auto result = ctx.OpFConvert(ctx.F16[1], value);
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -810,7 +810,7 @@ void BufferCache<P>::UpdateVertexBufferSlot(u32 index, const Binding& binding) {
+ template <class P>
+ void BufferCache<P>::BindHostVertexBuffers() {
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
+ #else
+     constexpr bool use_optimized_vertex_buffers = true;
+@@ -1744,7 +1744,7 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
+ 
+ template <class P>
+ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
+ #else
+     constexpr bool use_optimized_vertex_buffers = true;
+diff --git a/src/video_core/gpu_logging/freedreno_debug.cpp b/src/video_core/gpu_logging/freedreno_debug.cpp
+--- a/src/video_core/gpu_logging/freedreno_debug.cpp
++++ b/src/video_core/gpu_logging/freedreno_debug.cpp
+@@ -1,7 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ 
+ #include "video_core/gpu_logging/freedreno_debug.h"
+ #include "common/logging.h"
+@@ -49,4 +49,4 @@ std::string FreedrenoDebugger::GetBreadcrumbs() {
+ 
+ } // namespace GPU::Logging::Freedreno
+ 
+-#endif // __ANDROID__
++#endif // __EDEN_ANDROID_APP__
+diff --git a/src/video_core/gpu_logging/freedreno_debug.h b/src/video_core/gpu_logging/freedreno_debug.h
+--- a/src/video_core/gpu_logging/freedreno_debug.h
++++ b/src/video_core/gpu_logging/freedreno_debug.h
+@@ -3,7 +3,7 @@
+ 
+ #pragma once
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ 
+ #include <string>
+ 
+@@ -29,4 +29,4 @@ private:
+ 
+ } // namespace GPU::Logging::Freedreno
+ 
+-#endif // __ANDROID__
++#endif // __EDEN_ANDROID_APP__
+diff --git a/src/video_core/host1x/ffmpeg.cpp b/src/video_core/host1x/ffmpeg.cpp
+--- a/src/video_core/host1x/ffmpeg.cpp
++++ b/src/video_core/host1x/ffmpeg.cpp
+@@ -43,7 +43,7 @@ constexpr std::array PreferredGpuDecoders = {
+     AV_HWDEVICE_TYPE_DRM,
+ #elif defined(__APPLE__)
+     AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+     AV_HWDEVICE_TYPE_MEDIACODEC,
+ #elif defined(__unix__)
+     AV_HWDEVICE_TYPE_CUDA,
+@@ -88,7 +88,7 @@ std::string AVError(int errnum) {
+     return errbuf;
+ }
+ 
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+ size_t FindNalStartCode(std::span<const u8> data, size_t i) {
+     const size_t n = data.size();
+     if (i + 3 < n && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1) {
+@@ -171,7 +171,7 @@ static AVCodecID GetAVCodec(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
+ Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
+     const AVCodecID av_codec = GetAVCodec(codec);
+ 
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     if (Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
+         const char* mc_name = nullptr;
+         switch (av_codec) {
+@@ -284,7 +284,7 @@ DecoderContext::DecoderContext(const Decoder& decoder) : m_decoder{decoder} {
+     av_opt_set(m_codec_context->priv_data, "tune", "zerolatency", 0);
+     m_codec_context->thread_count = 0;
+     m_codec_context->thread_type &= ~FF_THREAD_FRAME;
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     m_codec_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+     m_codec_context->flags2 |= AV_CODEC_FLAG2_FAST;
+ #endif
+@@ -380,7 +380,7 @@ bool DecodeApi::Initialize(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
+     m_decoder_context.emplace(*m_decoder);
+ 
+     bool is_mediacodec = false;
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     const std::string_view decoder_name = m_decoder->GetCodec() ? m_decoder->GetCodec()->name : "";
+     is_mediacodec = decoder_name == "h264_mediacodec" ||
+                     decoder_name == "vp8_mediacodec" ||
+@@ -394,7 +394,7 @@ bool DecodeApi::Initialize(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
+         m_hardware_context->InitializeForDecoder(*m_decoder_context, *m_decoder);
+     }
+ 
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+     m_defer_android_mediacodec_open = is_mediacodec;
+     m_needs_h264_extradata = decoder_name == "h264_mediacodec";
+     if (m_defer_android_mediacodec_open) {
+@@ -416,7 +416,7 @@ bool DecodeApi::SendPacket(std::span<const u8> packet_data, const FrameOffsets&
+                            std::optional<FrameDimensions> dimensions) {
+     if (!m_opened) {
+         std::vector<u8> extradata;
+-#if defined(__ANDROID__)
++#if defined(__EDEN_ANDROID_APP__)
+         if (m_defer_android_mediacodec_open) {
+             if (!dimensions) {
+                 return true;
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -41,7 +41,7 @@
+ #include "video_core/vulkan_common/vulkan_memory_allocator.h"
+ #include "video_core/vulkan_common/vulkan_surface.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include <jni.h>
+ #endif
+ namespace Vulkan {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -46,7 +46,7 @@
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include "../../android/app/src/main/jni/android_settings.h"
+ #endif
+ 
+@@ -306,7 +306,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
+ size_t GetTotalPipelineWorkers() {
+     const size_t max_core_threads =
+         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL) - 1ULL;
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     const int configured = AndroidSettings::values.pipeline_worker_count.GetValue();
+     const int clamped = std::clamp(configured, 2, 8);
+     const size_t desired = static_cast<size_t>(clamped);
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.cpp b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+--- a/src/video_core/renderer_vulkan/vk_present_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+@@ -403,7 +403,7 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
+         try {
+             // Recreate surface and swapchain if needed.
+             if (requires_recreation) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+                 surface = CreateSurface(instance, render_window.GetWindowInfo());
+ #endif
+                 RecreateSwapchain(frame);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1115,13 +1115,13 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
+ }
+ 
+ void RasterizerVulkan::FlushWork() {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     static constexpr u32 DRAWS_TO_DISPATCH = 512;
+     static constexpr u32 CHECK_MASK = 3;
+ #else
+     static constexpr u32 DRAWS_TO_DISPATCH = 4096;
+     static constexpr u32 CHECK_MASK = 7;
+-#endif // __ANDROID__
++#endif // __EDEN_ANDROID_APP__
+ 
+     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
+     if ((++draw_counter & CHECK_MASK) != CHECK_MASK) {
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.cpp b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+--- a/src/video_core/renderer_vulkan/vk_swapchain.cpp
++++ b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+@@ -9,7 +9,7 @@
+ #include <limits>
+ #include <vector>
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #include <android/api-level.h>
+ #endif
+ 
+@@ -199,7 +199,7 @@ bool Swapchain::AcquireNextImage() {
+     }
+     };
+ 
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     if (android_get_device_api_level() >= 30) {
+         scheduler.Wait(resource_ticks[image_index]);
+     } else {
+@@ -291,7 +291,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
+         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+         .queueFamilyIndexCount = 0,
+         .pQueueFamilyIndices = nullptr,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         // On Android, do not allow surface rotation to deviate from the frontend.
+         .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+ #else
+@@ -316,7 +316,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
+         swapchain_ci.imageFormat,  // Base format MUST be first
+         VK_FORMAT_B8G8R8A8_UNORM,
+         VK_FORMAT_B8G8R8A8_SRGB,
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+         VK_FORMAT_R8G8B8A8_UNORM,  // Android may use RGBA
+         VK_FORMAT_R8G8B8A8_SRGB,
+ #endif
+@@ -341,7 +341,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
+ 
+     images = swapchain.GetImages();
+     image_count = static_cast<u32>(images.size());
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     // Android is already ordered the same as Switch.
+     image_view_format = VK_FORMAT_R8G8B8A8_UNORM;
+ #else
+diff --git a/src/video_core/renderer_vulkan/vk_turbo_mode.cpp b/src/video_core/renderer_vulkan/vk_turbo_mode.cpp
+--- a/src/video_core/renderer_vulkan/vk_turbo_mode.cpp
++++ b/src/video_core/renderer_vulkan/vk_turbo_mode.cpp
+@@ -4,7 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+ #include <adrenotools/driver.h>
+ #endif
+ 
+@@ -20,7 +20,7 @@ namespace Vulkan {
+ using namespace Common::Literals;
+ 
+ TurboMode::TurboMode(const vk::Instance& instance, const vk::InstanceDispatch& dld)
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     : m_device{CreateDevice(instance, dld, VK_NULL_HANDLE)}, m_allocator{m_device}
+ #endif
+ {
+@@ -40,7 +40,7 @@ void TurboMode::QueueSubmitted() {
+ }
+ 
+ void TurboMode::Run(std::stop_token stop_token) {
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     auto& dld = m_device.GetLogical();
+ 
+     // Allocate buffer. 2MiB should be sufficient.
+@@ -154,7 +154,7 @@ void TurboMode::Run(std::stop_token stop_token) {
+ #endif
+ 
+     while (!stop_token.stop_requested()) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+ #ifdef ARCHITECTURE_arm64
+         adrenotools_set_turbo(true);
+ #endif
+@@ -232,7 +232,7 @@ void TurboMode::Run(std::stop_token stop_token) {
+                    std::chrono::milliseconds{100};
+         });
+     }
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+     adrenotools_set_turbo(false);
+ #endif
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_turbo_mode.h b/src/video_core/renderer_vulkan/vk_turbo_mode.h
+--- a/src/video_core/renderer_vulkan/vk_turbo_mode.h
++++ b/src/video_core/renderer_vulkan/vk_turbo_mode.h
+@@ -26,7 +26,7 @@ public:
+ private:
+     void Run(std::stop_token stop_token);
+ 
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     Device m_device;
+     MemoryAllocator m_allocator;
+ #endif
+diff --git a/src/video_core/vulkan_common/vulkan.h b/src/video_core/vulkan_common/vulkan.h
+--- a/src/video_core/vulkan_common/vulkan.h
++++ b/src/video_core/vulkan_common/vulkan.h
+@@ -11,7 +11,7 @@
+ #define VK_USE_PLATFORM_WIN32_KHR
+ #elif defined(__APPLE__)
+ #define VK_USE_PLATFORM_METAL_EXT
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+ #define VK_USE_PLATFORM_ANDROID_KHR
+ #elif defined(__HAIKU__)
+ #define VK_USE_PLATFORM_XCB_KHR
+diff --git a/src/video_core/vulkan_common/vulkan_debug_callback.cpp b/src/video_core/vulkan_common/vulkan_debug_callback.cpp
+--- a/src/video_core/vulkan_common/vulkan_debug_callback.cpp
++++ b/src/video_core/vulkan_common/vulkan_debug_callback.cpp
+@@ -27,7 +27,7 @@ VkBool32 DebugUtilCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                            [[maybe_unused]] void* user_data) {
+     // Skip logging known false-positive validation errors
+     switch (static_cast<u32>(data->messageIdNumber)) {
+-#ifdef __ANDROID__
++#ifdef __EDEN_ANDROID_APP__
+     case 0xbf9cf353u: // VUID-vkCmdBindVertexBuffers2-pBuffers-04111
+     // The below are due to incorrect reporting of extendedDynamicState
+     case 0x1093bebbu: // VUID-vkCmdSetCullMode-None-03384
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -31,7 +31,7 @@
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
+ 
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+ #include <adrenotools/bcenabler.h>
+ #include <android/api-level.h>
+ #endif
+@@ -317,7 +317,7 @@ VkFormatFeatureFlags GetFormatFeatures(VkFormatProperties properties, FormatType
+     return format_properties;
+ }
+ 
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+ void OverrideBcnFormats(::Common::unordered_map<VkFormat, VkFormatProperties>& format_properties) {
+     // These properties are extracted from Adreno driver 512.687.0
+     constexpr VkFormatFeatureFlags tiling_features{VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+@@ -538,7 +538,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR
+                                features.workgroup_memory_explicit_layout,
+                                VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME);
+ 
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+         // BCn patching only safe on Android 9+ (API 28+). Older versions crash on driver load.
+         const auto major = (properties.properties.driverVersion >> 24) << 2;
+         const auto minor = (properties.properties.driverVersion >> 12) & 0xFFFU;
+diff --git a/src/video_core/vulkan_common/vulkan_instance.cpp b/src/video_core/vulkan_common/vulkan_instance.cpp
+--- a/src/video_core/vulkan_common/vulkan_instance.cpp
++++ b/src/video_core/vulkan_common/vulkan_instance.cpp
+@@ -51,7 +51,7 @@ namespace {
+     case Core::Frontend::WindowSystemType::Cocoa:
+         extensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+         break;
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+     case Core::Frontend::WindowSystemType::Android:
+         extensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+         break;
+diff --git a/src/video_core/vulkan_common/vulkan_library.cpp b/src/video_core/vulkan_common/vulkan_library.cpp
+--- a/src/video_core/vulkan_common/vulkan_library.cpp
++++ b/src/video_core/vulkan_common/vulkan_library.cpp
+@@ -16,7 +16,7 @@ namespace Vulkan {
+ std::shared_ptr<Common::DynamicLibrary> OpenLibrary(
+     [[maybe_unused]] Core::Frontend::GraphicsContext* context) {
+     LOG_DEBUG(Render_Vulkan, "Looking for a Vulkan library");
+-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
++#if defined(__EDEN_ANDROID_APP__) && defined(ARCHITECTURE_arm64)
+     // Android manages its Vulkan driver from the frontend.
+     return context->GetDriverLibrary();
+ #else
+diff --git a/src/video_core/vulkan_common/vulkan_surface.cpp b/src/video_core/vulkan_common/vulkan_surface.cpp
+--- a/src/video_core/vulkan_common/vulkan_surface.cpp
++++ b/src/video_core/vulkan_common/vulkan_surface.cpp
+@@ -45,7 +45,7 @@ vk::SurfaceKHR CreateSurface(
+             throw vk::Exception(VK_ERROR_INITIALIZATION_FAILED);
+         }
+     }
+-#elif defined(__ANDROID__)
++#elif defined(__EDEN_ANDROID_APP__)
+     if (window_info.type == Core::Frontend::WindowSystemType::Android) {
+         const VkAndroidSurfaceCreateInfoKHR android_ci{
+             VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, nullptr, 0,
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.h b/src/video_core/vulkan_common/vulkan_wrapper.h
+--- a/src/video_core/vulkan_common/vulkan_wrapper.h
++++ b/src/video_core/vulkan_common/vulkan_wrapper.h
+@@ -467,7 +467,7 @@ public:
+         return handle != Type{};
+     }
+ 
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     /**
+      * Releases ownership of the managed handle.
+      * The caller is responsible for managing the lifetime of the returned handle.
+@@ -549,7 +549,7 @@ public:
+         return handle != Type{};
+     }
+ 
+-#ifndef __ANDROID__
++#ifndef __EDEN_ANDROID_APP__
+     /**
+      * Releases ownership of the managed handle.
+      * The caller is responsible for managing the lifetime of the returned handle.
