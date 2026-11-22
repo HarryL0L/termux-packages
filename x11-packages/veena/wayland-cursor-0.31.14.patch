@@ -1,0 +1,49 @@
+Android's libc has no POSIX shm_open. Keep the memfd_create path (Android has it) and drop the shm_open fallback.
+
+--- a/vendor/wayland-cursor-0.31.14/src/lib.rs	2026-11-22 09:06:54.522123214 +0000
++++ b/vendor/wayland-cursor-0.31.14/src/lib.rs	2026-11-22 09:06:54.527179088 +0000
+@@ -59,7 +59,6 @@
+ #[cfg(any(target_os = "android", target_os = "disabling_this_because_it_is_for_building_an_apk"))]
+ use rustix::fs::{memfd_create, MemfdFlags};
+ use rustix::io::Errno;
+-use rustix::shm;
+ #[cfg(any(target_os = "android", target_os = "disabling_this_because_it_is_for_building_an_apk"))]
+ use std::ffi::CStr;
+ 
+@@ -450,34 +449,8 @@
+         }
+     }
+ 
+-    // Fallback to using shm_open.
+-    let sys_time = SystemTime::now();
+-    let mut mem_file_handle = format!(
+-        "/wayland-cursor-rs-{}",
+-        sys_time.duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+-    );
+-    loop {
+-        match shm::open(
+-            mem_file_handle.as_str(),
+-            shm::OFlags::CREATE | shm::OFlags::EXCL | shm::OFlags::RDWR,
+-            Mode::RUSR | Mode::WUSR,
+-        ) {
+-            Ok(fd) => match shm::unlink(mem_file_handle.as_str()) {
+-                Ok(_) => return Ok(fd),
+-                Err(errno) => return Err(IoError::from(errno)),
+-            },
+-            Err(Errno::EXIST) => {
+-                // If a file with that handle exists then change the handle
+-                mem_file_handle = format!(
+-                    "/wayland-cursor-rs-{}",
+-                    sys_time.duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+-                );
+-                continue;
+-            }
+-            Err(Errno::INTR) => continue,
+-            Err(errno) => return Err(IoError::from(errno)),
+-        }
+-    }
++    // Termux: Android has no shm_open; memfd above is the only way.
++    Err(IoError::from(Errno::NOSYS))
+ }
+ 
+ struct IgnoreObjectData;

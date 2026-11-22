@@ -1,0 +1,62 @@
+Android's libc has no POSIX shm_open. Keep the memfd_create path (Android has it) and drop the shm_open fallback.
+
+--- a/vendor/smithay-client-toolkit-0.19.2/src/shm/raw.rs	2026-11-22 09:06:54.557967156 +0000
++++ b/vendor/smithay-client-toolkit-0.19.2/src/shm/raw.rs	2026-11-22 09:06:54.562816461 +0000
+@@ -3,10 +3,7 @@
+ //! This is intended as a safe building block for higher level shared memory pool abstractions and is not
+ //! encouraged for most library users.
+ 
+-use rustix::{
+-    io::Errno,
+-    shm::{Mode, ShmOFlags},
+-};
++use rustix::io::Errno;
+ use std::{
+     fs::File,
+     io,
+@@ -181,43 +178,8 @@
+             };
+         }
+ 
+-        let time = SystemTime::now();
+-        let mut mem_file_handle = format!(
+-            "/smithay-client-toolkit-{}",
+-            time.duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+-        );
+-
+-        loop {
+-            let flags = ShmOFlags::CREATE | ShmOFlags::EXCL | ShmOFlags::RDWR;
+-
+-            let mode = Mode::RUSR | Mode::WUSR;
+-
+-            match rustix::shm::shm_open(mem_file_handle.as_str(), flags, mode) {
+-                Ok(fd) => match rustix::shm::shm_unlink(mem_file_handle.as_str()) {
+-                    Ok(_) => return Ok(fd),
+-
+-                    Err(errno) => {
+-                        return Err(errno.into());
+-                    }
+-                },
+-
+-                Err(Errno::EXIST) => {
+-                    // Change the handle if we happen to be duplicate.
+-                    let time = SystemTime::now();
+-
+-                    mem_file_handle = format!(
+-                        "/smithay-client-toolkit-{}",
+-                        time.duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+-                    );
+-
+-                    continue;
+-                }
+-
+-                Err(Errno::INTR) => continue,
+-
+-                Err(err) => return Err(err.into()),
+-            }
+-        }
++        // Termux: Android has no shm_open; memfd above is the only way.
++        Err(Errno::NOSYS.into())
+     }
+ 
+     #[cfg(target_os = "android")]
